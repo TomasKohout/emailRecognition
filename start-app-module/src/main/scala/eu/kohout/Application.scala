@@ -1,6 +1,6 @@
 package eu.kohout
 
-import com.google.inject.AbstractModule
+import com.google.inject.{AbstractModule, Guice, Injector}
 import eu.kohout.actorsystem.ActorSystemModule
 import eu.kohout.cleandata.CleanDataModule
 import eu.kohout.config.ConfigModule
@@ -26,7 +26,9 @@ object Application {
 }
 
 class Application(val modules: Seq[AbstractModule]) {
+  private val injector: Injector = Guice.createInjector(modules: _*)
 
-  def start(): Unit = ()
+  def start(): Unit =
+    ()
 
 }

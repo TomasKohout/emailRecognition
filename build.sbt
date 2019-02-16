@@ -165,3 +165,8 @@ lazy val `aggregation` = (project in file("."))
     `actor-system`
   )
 
+assemblyMergeStrategy in assembly := {
+  case "reference.conf" => MergeStrategy.concat
+  case "application.conf" => MergeStrategy.concat
+  case x => MergeStrategy.first
+}

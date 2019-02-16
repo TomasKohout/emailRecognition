@@ -1,6 +1,6 @@
 package eu.kohout.cleandata
 import akka.actor.{Actor, ActorRef, Props}
-import eu.kohout.model.manager.ModelManager.CleansedEmail
+import eu.kohout.model.manager.messages.ModelMessages.CleansedEmail
 import eu.kohout.parser.{Email, HTML, PLAIN}
 import smile.nlp._
 import smile.nlp.stemmer.Stemmer
