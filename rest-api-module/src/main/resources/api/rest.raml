@@ -1,0 +1,57 @@
+#%RAML 1.0
+title: "Email recognition service"
+description: "Email recognition service"
+version: "1.0"
+protocols:
+- "HTTP"
+#baseUri: "https://thecontactsapi.restlet.net/v1"
+mediaType: application/json
+
+types:
+  Email:
+    type: object
+    properties:
+      head: string
+      body: string
+
+  TrainData:
+    type: object
+    properties:
+      typeOfModel: string
+      data: Email[]
+
+  EmailRecognitionResponse:
+    type: object
+    properties:
+      label: Label
+      models: Model[]
+
+
+  Model:
+    type: object
+    properties:
+      percent: integer
+      typeOfModel: string
+
+  Label:
+    type: string
+    enum:
+      - SPAM
+      - HAM
+
+/email-recognition:
+  post:
+    body: Email
+    responses:
+      200:
+       body: EmailRecognitionResponse
+
+
+/train-model:
+  post:
+    body: Email[]
+    responses:
+      200:
+        description: Model trained
+      410:
+        description: typeOfModel does not exist
