@@ -18,9 +18,10 @@ class GenericPredictor extends Actor with Predictor {
     case updateModel: UpdateModel =>
       serializer.fromXML(updateModel.model) match {
         case classifier: Classifier[_] =>
+          log.debug("Model received and updated!")
           model = classifier.asInstanceOf[Classifier[Array[Double]]]
         case other =>
-          log.warn(s"received something that is not classifier for Array[Double =>> {}", other)
+          log.error(s"received something that is not classifier for Array[Double =>> {}", other)
       }
 
     case predict: CleansedEmail =>

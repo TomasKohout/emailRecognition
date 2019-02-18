@@ -13,5 +13,9 @@ class LoadDataModule extends AbstractModule {
     config: Config,
     actorSystem: ActorSystem,
     @CleanDataManagerTag cleanDataManager: ActorRef
-  ): ActorRef = actorSystem.actorOf(LoadDataManager.props(config, cleanDataManager))
+  ): ActorRef = LoadDataManager.asClusterSingleton(
+    LoadDataManager.props(config, cleanDataManager),
+    config,
+    actorSystem
+  )
 }

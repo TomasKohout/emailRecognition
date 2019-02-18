@@ -1,5 +1,5 @@
 package eu.kohout.parser
-import java.io.{FileInputStream, InputStream}
+import java.io.{ByteArrayInputStream, FileInputStream, InputStream}
 import java.time.Instant
 import java.util.{Scanner, UUID}
 
@@ -55,6 +55,8 @@ case class Email(
 
 object EmailParser {
 
+  private val log = Logger(getClass)
+
   implicit private def streamToString(fis: InputStream): Option[String] = {
     val scanner = new Scanner(fis).useDelimiter("\\A")
     if (scanner.hasNext) scanner.next else None
@@ -64,13 +66,19 @@ object EmailParser {
 
   private val MessageId = "Message-ID"
 
-  def parse(
+  def parseFromFile(
     path: String,
     emailType: EmailType
   ): Email = {
-    //"/Users/tomaskohout/Downloads/trec07p/data/inmail.3"
+    log.debug("Parsing email path: {}", path)
     val fis = new FileInputStream(path)
+    parse(fis, emailType)
+  }
 
+  private def parse(
+    is: InputStream,
+    emailType: EmailType
+  ): Email = {
     val contentHandler = new tech.blueglacier.parser.CustomContentHandler()
     val mime4jConfig = MimeConfig.DEFAULT
     val bodyDescriptorBuilder = new DefaultBodyDescriptorBuilder()
@@ -80,13 +88,14 @@ object EmailParser {
     parser.setContentHandler(contentHandler)
 
     try {
-      parser.parse(fis)
+      parser.parse(is)
     } finally {
-      fis.close()
+      is.close()
     }
 
     val email = Option(contentHandler.getEmail)
 
+    log.debug("Email parsed {}", email.isDefined)
     val htmlBody: Option[String] = email.flatMap(_.getHTMLEmailBody).flatMap(_.getIs)
     val plainBody: Option[String] = email.flatMap(_.getPlainTextEmailBody).flatMap(_.getIs)
 
@@ -97,7 +106,9 @@ object EmailParser {
       .flatMap(_.getHeader)
       .flatMap(_.getField(MessageId))
       .flatMap(_.getBody)
-      .getOrElse(path concat "  " concat Instant.now().toEpochMilli.toString)
+      .getOrElse(UUID.randomUUID() + "---" + Instant.now().toEpochMilli.toString)
+
+    log.debug("Email have htmlBody: {}, plainBody: {} and id: {}", htmlBody.isDefined, plainBody.isDefined, id)
 
     Email(
       bodyParts = parts,
@@ -105,5 +116,10 @@ object EmailParser {
       id = id
     )
   }
+
+  def parseFromString(
+    message: String,
+    emailType: EmailType
+  ): Email = parse(new ByteArrayInputStream(message.getBytes), emailType)
 
 }

@@ -12,7 +12,7 @@ class ActorSystemModule extends AbstractModule {
     val name = if (config.hasPath("application.actorSystemName")) {
       config.getString("application.actorSystemName")
     } else {
-      "DefaultActorSystem"
+      "application"
     }
 
     ActorSystem(name, config)

@@ -1,8 +1,18 @@
 package eu.kohout.loaddata
 import java.io.File
+import java.util.UUID
 
-import akka.actor.{Actor, ActorRef, Props}
-import akka.routing.{ActorRefRoutee, RoundRobinRoutingLogic, Router}
+import akka.actor.{Actor, ActorRef, ActorSystem, PoisonPill, Props}
+import akka.cluster._
+import akka.cluster.routing.{ClusterRouterPool, ClusterRouterPoolSettings}
+import akka.cluster.singleton.{
+  ClusterSingletonManager,
+  ClusterSingletonManagerSettings,
+  ClusterSingletonProxy,
+  ClusterSingletonProxySettings
+}
+import akka.routing.ConsistentHashingRouter.ConsistentHashableEnvelope
+import akka.routing.{ActorRefRoutee, ConsistentHashingPool, RoundRobinRoutingLogic, Router}
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
 import eu.kohout.loaddata.LoadDataWorker.LoadData
@@ -11,6 +21,33 @@ import eu.kohout.parser.EmailType
 import scala.io.Source
 
 object LoadDataManager {
+
+  val name = "LoadData"
+
+  def asClusterSingleton(
+    props: Props,
+    appCfg: Config,
+    system: ActorSystem
+  ): ActorRef = {
+
+    val singleton = system.actorOf(
+      ClusterSingletonManager.props(
+        singletonProps = props,
+        terminationMessage = PoisonPill,
+        settings = ClusterSingletonManagerSettings(system)
+      ),
+      name = name + "Manager"
+    )
+
+    system.actorOf(
+      ClusterSingletonProxy.props(
+        singletonManagerPath = singleton.path.toStringWithoutAddress,
+        settings = ClusterSingletonProxySettings(system)
+      ),
+      name = name + "Proxy"
+    )
+
+  }
 
   def props(
     config: Config,
@@ -22,8 +59,8 @@ object LoadDataManager {
   sealed trait LoadDataManagerMessages
 
   private object Configuration {
-    val configPath = "loadDataManager"
-    val numberOfWorkersPath = s"$configPath.numberOfWorkers"
+    val configPath = "load-data"
+    val numberOfWorkersPath = s"$configPath.number-of-workers"
     val dataPath = s"$configPath.data"
     val labelsPath = s"$configPath.labels"
   }
@@ -41,30 +78,35 @@ class LoadDataManager(
 
   private val log = Logger(getClass)
 
-  private var workers: Router = _
+  private val workers: ActorRef = createWorkers()
   private var emailTypes: Map[FileName, EmailType] = _
 
-  private def createWorkers(): Unit = {
+  private def createWorkers(): ActorRef = {
     val numberOfWorkers = config.getInt(Configuration.numberOfWorkersPath)
     require(numberOfWorkers > 0, "At least one worker for loading data must be created!")
 
-    val workerName = "LoadDataWorker"
-    val routees = Vector.fill(numberOfWorkers) {
-
-      val worker = context.actorOf(LoadDataWorker.props(cleanDataManager))
-      context watch worker
-      ActorRefRoutee(worker)
-    }
-
-    workers = Router(RoundRobinRoutingLogic(), routees)
+    context.actorOf(
+      ClusterRouterPool(
+        ConsistentHashingPool(numberOfWorkers),
+        ClusterRouterPoolSettings(totalInstances = numberOfWorkers * 10, maxInstancesPerNode = numberOfWorkers, allowLocalRoutees = true)
+      ).props(LoadDataWorker.props(cleanDataManager)),
+      name = "LoadDataWorker"
+    )
   }
 
   override def receive: Receive = {
     case loadData: LoadDataFromPath =>
+      log.debug("Loading data from path: {}", loadData.path.getAbsolutePath)
+
       loadData.path
         .listFiles()
-        .flatMap(file => emailTypes.get(file.getName).map((_, file)))
-        .foreach { case (emailType, file) => workers.route(LoadData(email = file, label = emailType), self) }
+        .flatMap { file =>
+          emailTypes.get(file.getName).map((_, file))
+        }
+        .foreach {
+          case (emailType, file) =>
+            workers.tell(ConsistentHashableEnvelope(LoadData(email = file, label = emailType), UUID.randomUUID()), self)
+        }
   }
 
   private def splitLabelsRow(row: String): Option[(FileName, EmailType)] = {
@@ -75,7 +117,7 @@ class LoadDataManager(
       val lastIndex = path.lastIndexOf("/")
 
       val fileName = if (lastIndex > 0 && lastIndex < path.length) {
-        Some(path.substring(lastIndex, path.length))
+        Some(path.substring(lastIndex, path.length).replace("/", ""))
       } else {
         log.warn("{} does not satisfy label definitions", path)
         None
@@ -97,19 +139,19 @@ class LoadDataManager(
   override def preStart(): Unit = {
     super.preStart()
 
-    createWorkers()
-
     require(config.hasPath(Configuration.dataPath), s"This `${Configuration.dataPath}` can not be empty.")
     require(config.hasPath(Configuration.labelsPath), s"This `${Configuration.labelsPath}` can not be empty.")
 
     val emailsDir = new File(config.getString(Configuration.dataPath))
-    require(!emailsDir.exists || !emailsDir.isDirectory, s"Provided path is not a directory. ${Configuration.dataPath}")
+    require(emailsDir.exists && emailsDir.isDirectory, s"Provided path is not a directory. ${emailsDir.getAbsolutePath}")
 
     val labelsFile = new File(config.getString(Configuration.labelsPath))
-    require(!labelsFile.exists || !labelsFile.isFile, s"Provided path is not a file. ${Configuration.labelsPath}")
+    require(labelsFile.exists && labelsFile.isFile, s"Provided path is not a file. ${Configuration.labelsPath}")
 
     emailTypes = createLabelMap(labelsFile)
+    log.debug("Label map size {}", emailTypes.size)
 
+    log.debug("Sending message to self")
     self ! LoadDataFromPath(emailsDir)
   }
 }

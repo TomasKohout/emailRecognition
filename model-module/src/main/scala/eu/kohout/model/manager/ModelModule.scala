@@ -2,6 +2,7 @@ package eu.kohout.model.manager
 import akka.actor.{ActorRef, ActorSystem}
 import com.google.inject.{AbstractModule, Provides, Singleton}
 import com.typesafe.config.Config
+import com.typesafe.scalalogging.Logger
 
 class ModelModule extends AbstractModule {
 
@@ -11,5 +12,6 @@ class ModelModule extends AbstractModule {
   def modelManager(
     config: Config,
     actorSystem: ActorSystem
-  ): ActorRef = actorSystem.actorOf(ModelManager.props(config), ModelManager.name)
+  ): ActorRef =
+    ModelManager.asClusterSingleton(ModelManager.props(config), config, actorSystem)
 }

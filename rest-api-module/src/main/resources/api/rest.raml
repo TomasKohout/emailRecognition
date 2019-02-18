@@ -11,14 +11,31 @@ types:
   Email:
     type: object
     properties:
-      head: string
-      body: string
+      text:
+        type: string
+        description: Whole email either with or withou mime format.
 
   TrainData:
     type: object
     properties:
-      typeOfModel: string
-      data: Email[]
+      label: Label
+      message: string
+
+  Models:
+    type: string
+    enum:
+      - NaiveBayes
+      - SVM
+
+  TrainRequest:
+    type: object
+    properties:
+      modelType:
+        description: |
+          If this field is missing then every model will be updated.
+        required: false
+        type: Models
+      data: TrainData[]
 
   EmailRecognitionResponse:
     type: object
@@ -47,11 +64,12 @@ types:
        body: EmailRecognitionResponse
 
 
-/train-model:
-  post:
-    body: Email[]
-    responses:
-      200:
-        description: Model trained
-      410:
-        description: typeOfModel does not exist
+/models:
+  /!train:
+    post:
+      body: TrainRequest
+      responses:
+        200:
+          description: Model trained
+        410:
+          description: typeOfModel does not exist

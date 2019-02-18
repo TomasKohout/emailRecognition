@@ -1,4 +1,4 @@
-import Dependencies.{typesafeConfig, _}
+import Dependencies.{akkaCluster, akkaDistributedData, akkaHttpCirce, circeCore, circeGeneric, circeParser, typesafeConfig, _}
 
 lazy val commonSettings = Seq(
   organization := "eu.kohout",
@@ -12,8 +12,9 @@ lazy val commonSettings = Seq(
     // For details see http://stackoverflow.com/questions/24310889/how-to-redirect-aws-sdk-logging-output
 //    commonsLoggingEmpty,
 //    jclOverSlf4j,
-    scalaLogging
-//    logback,
+    scalaLogging,
+    akkaSlf4j,
+    logback
 //    scalaTest % Test,
 //    scalaMock % Test
   ),
@@ -80,15 +81,23 @@ lazy val `rest-api-module` = (project in file("rest-api-module"))
   .settings(
     libraryDependencies ++= Seq(
       akkaHttp,
-      googleGuice
+      googleGuice,
+      circeCore,
+      circeGeneric,
+      circeParser,
+      akkaHttpCirce
     )
   )
-  .dependsOn(`model-module`)
+  .dependsOn(`model-module`, `clean-data-module`)
 
 lazy val `model-module` = (project in file("model-module"))
   .settings(
     libraryDependencies ++= Seq(
       akkaActor,
+      akkaHttp,
+      akkaDistributedData,
+      akkaCluster,
+      akkaClusterSharding,
       googleGuice,
       smileCore
     )
@@ -99,6 +108,10 @@ lazy val `clean-data-module` = (project in file("clean-data-module"))
   .settings(
     libraryDependencies ++= Seq(
       akkaActor,
+      akkaHttp,
+      akkaDistributedData,
+      akkaCluster,
+      akkaClusterSharding,
       googleGuice,
       smileCore
     )
@@ -109,6 +122,10 @@ lazy val `load-data-module` = (project in file("load-data-module"))
   .settings(
     libraryDependencies ++= Seq(
       akkaActor,
+      akkaHttp,
+      akkaDistributedData,
+      akkaCluster,
+      akkaClusterSharding,
       googleGuice
     )
   )
@@ -166,7 +183,9 @@ lazy val `aggregation` = (project in file("."))
   )
 
 assemblyMergeStrategy in assembly := {
-  case "reference.conf" => MergeStrategy.concat
-  case "application.conf" => MergeStrategy.concat
-  case x => MergeStrategy.first
+  case "application.conf" => MergeStrategy.discard
+  case "logback.xml" => MergeStrategy.discard
+  case x =>
+    val oldStrategy = (assemblyMergeStrategy in assembly).value
+    oldStrategy(x)
 }
