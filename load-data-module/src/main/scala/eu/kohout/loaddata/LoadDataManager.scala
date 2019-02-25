@@ -1,23 +1,20 @@
 package eu.kohout.loaddata
 import java.io.File
-import java.util.UUID
 
 import akka.actor.{Actor, ActorRef, ActorSystem, PoisonPill, Props}
-import akka.cluster._
 import akka.cluster.routing.{ClusterRouterPool, ClusterRouterPoolSettings}
-import akka.cluster.singleton.{
-  ClusterSingletonManager,
-  ClusterSingletonManagerSettings,
-  ClusterSingletonProxy,
-  ClusterSingletonProxySettings
-}
-import akka.routing.ConsistentHashingRouter.ConsistentHashableEnvelope
-import akka.routing.{ActorRefRoutee, ConsistentHashingPool, RoundRobinRoutingLogic, Router}
+import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
+import akka.routing.RoundRobinPool
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
-import eu.kohout.loaddata.LoadDataWorker.LoadData
-import eu.kohout.parser.EmailType
+import eu.kohout.loaddata.LoadDataWorker.{DecreaseForError, LoadedTrainData}
+import eu.kohout.parser.{Email, EmailType}
+import eu.kohout.cleandata.CleanDataManager.TrainData
+import eu.kohout.parser.EmailType.{Ham, Spam}
+import eu.kohout.types.Types.LoadTestData
 
+import scala.concurrent.ExecutionContext
+import scala.concurrent.duration._
 import scala.io.Source
 
 object LoadDataManager {
@@ -51,8 +48,9 @@ object LoadDataManager {
 
   def props(
     config: Config,
-    cleanDataManager: ActorRef
-  ): Props = Props(new LoadDataManager(config, cleanDataManager))
+    cleanDataManager: ActorRef,
+    resultsAggregator: ActorRef
+  ): Props = Props(new LoadDataManager(config, cleanDataManager, resultsAggregator))
 
   case class LoadDataFromPath(path: File) extends LoadDataManagerMessages
 
@@ -63,6 +61,8 @@ object LoadDataManager {
     val numberOfWorkersPath = s"$configPath.number-of-workers"
     val dataPath = s"$configPath.data"
     val labelsPath = s"$configPath.labels"
+    val trainDataSize = s"$configPath.train-data-size"
+    val sizeLimit = s"$configPath.size-limit"
   }
 
   private type LoadDataWorkers = ActorRef
@@ -72,14 +72,25 @@ object LoadDataManager {
 
 class LoadDataManager(
   config: Config,
-  cleanDataManager: ActorRef)
+  cleanDataManager: ActorRef,
+  resultsAggregator: ActorRef)
     extends Actor {
   import LoadDataManager._
 
-  private val log = Logger(getClass)
+  private val log = Logger(self.path.toStringWithoutAddress)
+  implicit private val ec: ExecutionContext = context.dispatcher
+  // map that hold information about type (spam/ham) of email stored in specific file
+  private var emailTypes: Map[FileName, EmailType] = _
+  private var loadedTrainData: Seq[Email] = Seq.empty
+  private var sizeOfTrainData = 0
 
   private val workers: ActorRef = createWorkers()
-  private var emailTypes: Map[FileName, EmailType] = _
+
+  private val takeAmountForTraining: Int => Int = _ / 100 * config.getInt(Configuration.trainDataSize)
+
+  private val sizeLimit = config.getInt(Configuration.sizeLimit)
+
+  private var testDataPaths: Array[File] = Array.empty
 
   private def createWorkers(): ActorRef = {
     val numberOfWorkers = config.getInt(Configuration.numberOfWorkersPath)
@@ -87,25 +98,85 @@ class LoadDataManager(
 
     context.actorOf(
       ClusterRouterPool(
-        ConsistentHashingPool(numberOfWorkers),
-        ClusterRouterPoolSettings(totalInstances = numberOfWorkers * 10, maxInstancesPerNode = numberOfWorkers, allowLocalRoutees = true)
-      ).props(LoadDataWorker.props(cleanDataManager)),
+        RoundRobinPool(numberOfWorkers),
+        ClusterRouterPoolSettings(totalInstances = 100, maxInstancesPerNode = numberOfWorkers, allowLocalRoutees = true)
+      ).props(LoadDataWorker.props(cleanDataManager, resultsAggregator))
+        .withDispatcher("clean-dispatcher"),
       name = "LoadDataWorker"
     )
   }
 
   override def receive: Receive = {
+
+    case decreaseForError: DecreaseForError =>
+      log.error("Error occured: ", decreaseForError.exception.getMessage)
+      decreaseForError.exception.printStackTrace()
+
+      sizeOfTrainData = sizeOfTrainData - 1
+      log.debug("sizeOfTrainData {}", sizeOfTrainData)
+      if (sizeOfTrainData == 0) {
+        cleanDataManager ! TrainData(loadedTrainData)
+        context.system.scheduler.scheduleOnce(3 minutes, self, LoadTestData)
+      }
+      ()
+
+    case loadedData: LoadedTrainData =>
+      loadedTrainData = loadedData.email +: loadedTrainData
+      sizeOfTrainData = sizeOfTrainData - 1
+
+      log.debug("sizeOfTrainData {}", sizeOfTrainData)
+      if (sizeOfTrainData == 0) {
+        cleanDataManager ! TrainData(loadedTrainData)
+        context.system.scheduler.scheduleOnce(4 minutes, self, LoadTestData)
+      }
+
+      ()
+
     case loadData: LoadDataFromPath =>
       log.debug("Loading data from path: {}", loadData.path.getAbsolutePath)
 
-      loadData.path
+      val files = loadData.path
         .listFiles()
+        .take(sizeLimit)
+
+      val groupedByType = files
+        .flatMap { file =>
+          emailTypes
+            .get(file.getName)
+            .map((_, file))
+        } //group by email Type
+        .groupBy(_._1)
+
+      val hamMails = groupedByType.get(Ham)
+      val spamMails = groupedByType.get(Spam)
+
+      //TODO this could be problem. Data sets does not have to be the same size
+      val (spamTrain, spamTest) = spamMails.getOrElse(Array.empty).splitAt(takeAmountForTraining(files.length))
+      val (hamTrain, hamTest) = hamMails.getOrElse(Array.empty).splitAt(takeAmountForTraining(files.length))
+
+      val trainData = spamTrain ++ hamTrain
+
+      testDataPaths = spamTest.map(_._2) ++ hamTest.map(_._2)
+
+      sizeOfTrainData = trainData.length
+
+      log.debug("Initial size of train data {}", sizeOfTrainData)
+
+      trainData
+        .foreach {
+          case (emailType, file) =>
+            workers ! LoadDataWorker.LoadTrainData(email = file, label = emailType)
+        }
+      ()
+
+    case LoadTestData =>
+      testDataPaths
         .flatMap { file =>
           emailTypes.get(file.getName).map((_, file))
         }
         .foreach {
           case (emailType, file) =>
-            workers.tell(ConsistentHashableEnvelope(LoadData(email = file, label = emailType), UUID.randomUUID()), self)
+            workers ! LoadDataWorker.LoadTestData(email = file, label = emailType)
         }
   }
 

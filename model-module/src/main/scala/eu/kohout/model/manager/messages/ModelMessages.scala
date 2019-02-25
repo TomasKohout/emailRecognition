@@ -1,13 +1,15 @@
 package eu.kohout.model.manager.messages
+import akka.actor.ActorRef
 import eu.kohout.parser.EmailType
+import eu.kohout.types.ModelTypes
 import smile.math.SparseArray
 
 object ModelMessages {
   case object Share extends ModelMessages
 
-  type Serialization = String
-  case class UpdateModel(model: Serialization) extends ModelMessages
+  type SerializedModel = String
 
+  case class UpdateModel(model: SerializedModel) extends ModelMessages
   case class PredictResult(
     id: String,
     result: Int,
@@ -27,17 +29,27 @@ object ModelMessages {
     }
 
   }
+
   case class CleansedEmail(
     id: String,
     data: Array[Double],
     `type`: EmailType,
-    htmlTags: Map[String, Int])
+    htmlTags: Map[String, Int],
+    replyTo: Option[ActorRef] = None)
 
-  case class Train(data: CleansedEmail) extends ModelMessages
+  case class TrainSeq(
+    seq: Seq[CleansedEmail],
+    models: Seq[ModelTypes] = Seq.empty)
+      extends ModelMessages
+
+  case class Train(data: CleansedEmail)
+
+  case class FeatureSizeForBayes(size: Int) extends ModelMessages
 
   case class Predict(data: CleansedEmail) extends ModelMessages
 
+  case class Trained(id: String) extends ModelMessages
+
   sealed trait ModelMessages
 
-  trait HttpMessage
 }

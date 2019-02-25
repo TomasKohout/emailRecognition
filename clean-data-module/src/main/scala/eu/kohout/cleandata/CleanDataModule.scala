@@ -3,7 +3,7 @@ import akka.actor.{ActorRef, ActorSystem}
 import com.google.inject.{AbstractModule, Provides, Singleton}
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
-import eu.kohout.model.manager.ModelManagerTag
+import eu.kohout.tags.{CleanDataManagerTag, ModelManagerTag}
 
 class CleanDataModule extends AbstractModule {
 
@@ -18,6 +18,10 @@ class CleanDataModule extends AbstractModule {
     actorSystem: ActorSystem
   ): ActorRef = {
     log.info("Creating CleanDataMaanger")
-    CleanDataManager.asClusterSingleton(CleanDataManager.props(config = config, modelManager = modelManager), config, actorSystem)
+    CleanDataManager.asClusterSingleton(
+      CleanDataManager.props(config = config, modelManager = modelManager),
+      config,
+      actorSystem
+    )
   }
 }

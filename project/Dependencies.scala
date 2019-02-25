@@ -14,6 +14,8 @@ object Versions {
   val typesafeConfig = "1.3.3"
   val logback = "1.2.3"
   val circe = "0.10.0"
+  val jclOverSlf4j = "1.7.21"
+  val commonsLoggingEmpty = "99-empty"
 }
 
 object Dependencies {
@@ -33,4 +35,7 @@ object Dependencies {
   lazy val circeGeneric = "io.circe" %% "circe-generic" % Versions.circe
   lazy val circeParser = "io.circe" %% "circe-parser" % Versions.circe
   lazy val akkaHttpCirce = "de.heikoseeberger" %% "akka-http-circe" % Versions.heikoseebergCirce
+  lazy val jclOverSlf4j = "org.slf4j" % "jcl-over-slf4j" % Versions.jclOverSlf4j
+  lazy val commonsLoggingEmpty = "commons-logging" % "commons-logging" % Versions.commonsLoggingEmpty
+
 }

@@ -10,8 +10,8 @@ lazy val commonSettings = Seq(
   libraryDependencies ++= Seq(
     // next 2 lines redirects commons-logging/Log4j records to logback.
     // For details see http://stackoverflow.com/questions/24310889/how-to-redirect-aws-sdk-logging-output
-//    commonsLoggingEmpty,
-//    jclOverSlf4j,
+    commonsLoggingEmpty,
+    jclOverSlf4j,
     scalaLogging,
     akkaSlf4j,
     logback
@@ -88,7 +88,7 @@ lazy val `rest-api-module` = (project in file("rest-api-module"))
       akkaHttpCirce
     )
   )
-  .dependsOn(`model-module`, `clean-data-module`)
+  .dependsOn(`model-module`, `clean-data-module`, `shared-types`)
 
 lazy val `model-module` = (project in file("model-module"))
   .settings(
@@ -102,7 +102,7 @@ lazy val `model-module` = (project in file("model-module"))
       smileCore
     )
   )
-  .dependsOn(`email-parser`)
+  .dependsOn(`email-parser`, `shared-types`, `results-aggregator`)
 
 lazy val `clean-data-module` = (project in file("clean-data-module"))
   .settings(
@@ -116,7 +116,7 @@ lazy val `clean-data-module` = (project in file("clean-data-module"))
       smileCore
     )
   )
-  .dependsOn(`email-parser`,  `model-module`)
+  .dependsOn(`email-parser`,  `model-module`, `shared-types`)
 
 lazy val `load-data-module` = (project in file("load-data-module"))
   .settings(
@@ -129,7 +129,7 @@ lazy val `load-data-module` = (project in file("load-data-module"))
       googleGuice
     )
   )
-  .dependsOn(`email-parser`, `clean-data-module`)
+  .dependsOn(`email-parser`, `clean-data-module`, `shared-types`)
 
 lazy val `start-app-module` = (project in file("start-app-module"))
   .settings(
@@ -144,7 +144,8 @@ lazy val `start-app-module` = (project in file("start-app-module"))
     `rest-api-module`,
     `email-parser`,
     `actor-system`,
-    `typesafe-config`
+    `typesafe-config`,
+    `shared-types`
   )
 
 lazy val `email-parser` = (project in file("email-parser"))
@@ -154,6 +155,7 @@ lazy val `email-parser` = (project in file("email-parser"))
       emailParser
     )
   )
+  .dependsOn(`shared-types`)
 
 lazy val `actor-system` = (project in file("actor-system"))
   .settings(
@@ -181,6 +183,23 @@ lazy val `aggregation` = (project in file("."))
     `typesafe-config`,
     `actor-system`
   )
+
+lazy val `shared-types` = (project in file("shared-types"))
+  .settings(
+    libraryDependencies ++= Seq(googleGuice)
+  )
+
+lazy val `results-aggregator` = (project in file("results-aggregator"))
+    .settings(
+      libraryDependencies ++= Seq(
+        googleGuice,
+        akkaActor,
+        akkaDistributedData,
+        akkaCluster,
+        akkaClusterSharding,
+      )
+    )
+    .dependsOn(`email-parser`, `shared-types`)
 
 assemblyMergeStrategy in assembly := {
   case "application.conf" => MergeStrategy.discard

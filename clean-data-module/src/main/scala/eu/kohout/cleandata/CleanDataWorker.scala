@@ -1,14 +1,18 @@
 package eu.kohout.cleandata
 import akka.actor.{Actor, ActorRef, Props}
+import akka.util.Timeout
 import com.typesafe.scalalogging.Logger
-import eu.kohout.cleandata.CleanDataManager.{EmailRecognitionRequest, HttpMessage, TrainData, TrainRequest}
-import eu.kohout.model.manager.messages.ModelMessages.CleansedEmail
+import eu.kohout.cleandata.CleanDataManager._
+import eu.kohout.cleandata.CleanDataWorker.ProcessStashedData
+import eu.kohout.model.manager.messages.ModelMessages.{CleansedEmail, Predict, Train}
 import eu.kohout.parser._
-import smile.math.SparseArray
+import org.apache.commons.lang3.CharUtils
+import smile.feature.Bag
 import smile.nlp._
-import smile.nlp.stemmer.Stemmer
+import smile.nlp.stemmer.{PorterStemmer, Stemmer}
 
-import scala.util.Try
+import scala.concurrent.duration._
+import scala.util.{Success, Try}
 
 object CleanDataWorker {
   val workerName = "CleanDataWorker"
@@ -18,35 +22,91 @@ object CleanDataWorker {
     takeFeatures: Int,
     stopWords: String,
     stemmer: Stemmer
-  ): Props = Props(new CleanDataWorker(modelManager, takeFeatures, Some(stopWords), Some(stemmer)))
+  ): Props = Props(new CleanDataWorker(modelManager, takeFeatures, Some(stopWords), stemmer))
+
+  private case object ProcessStashedData
 }
 
 class CleanDataWorker(
   modelManager: ActorRef,
   takeFeatures: Int,
   stopWords: Option[String],
-  stemmer: Option[Stemmer])
+  stemmer: Stemmer = new PorterStemmer)
     extends Actor {
 
-  private val log = Logger(self.path.address.toString)
+  implicit val timout: Timeout = 5 seconds
 
+  private val log = Logger(self.path.toStringWithoutAddress)
+  private var bag: Bag[String] = _
+  private var stashedMessages: List[TestData] = List.empty
   override def receive: Receive = {
-    case email: Email =>
-      log.debug("Received email with id {}", email.id)
-      modelManager ! cleanEmail(email)
-    case httpMessage: HttpMessage =>
-      httpMessage match {
-        case message: EmailRecognitionRequest =>
-          Try { EmailParser.parseFromString(message.text, EmailType.NotObtained) }
-            .map { parsedEmail =>
-            }
 
-        case train: TrainRequest =>
-          EmailParser.parseFromString()
-      }
+    case message: CleanData =>
+      log.debug("Train data recieved with id {}", message.email.id)
+
+      sender() ! Try(cleanEmail(message.email))
+        .transform(
+          Success(_),
+          ec => Success(DecreaseSizeBecauseOfError(ec))
+        )
+        .get
+
+    case message: TestData =>
+      stashedMessages = message :: stashedMessages
+      ()
+    case shareBag: ShareBag =>
+      bag = shareBag.bag
+      log.info("Becoming withBagOfWords")
+      context.become(withBagOfWords)
+      self ! ProcessStashedData
+
+    case other =>
+      log.warn("Received message that should not be here {}", other)
   }
 
-  private def cleanEmail(email: Email): CleansedEmail = {
+  private def withBagOfWords: Receive = {
+
+    case message: CleanData =>
+      log.debug("Train data recieved with id {}", message.email.id)
+      sender() ! cleanEmail(message.email)
+
+    case message: CleansedData =>
+      log.debug("Cleansed data received with id {}", message.id)
+      val train = bag.feature(message.data.map(_._1).toArray)
+
+      sender() ! Train(
+        CleansedEmail(
+          id = message.id,
+          data = train,
+          `type` = message.`type`,
+          htmlTags = message.htlmTags
+        )
+      )
+
+    case message: TestData =>
+      log.debug("Test data recieved with id {}", message.email.id)
+      val cleansedData = cleanEmail(message.email)
+
+      modelManager ! Predict(
+        data = CleansedEmail(
+          id = message.email.id,
+          data = bag.feature(cleansedData.data.map(_._1).toArray),
+          `type` = message.email.`type`,
+          htmlTags = cleansedData.htlmTags
+        )
+      )
+
+    case ProcessStashedData =>
+      stashedMessages
+        .foreach(self !)
+
+      stashedMessages = List.empty
+
+    case other =>
+      log.warn("Received message that should not be here {}", other)
+  }
+
+  private def cleanEmail(email: Email): CleansedData = {
     val (htmlTags, text) = email.bodyParts
       .map { bodyPart =>
         bodyPart.`type` match {
@@ -59,13 +119,28 @@ class CleanDataWorker(
           (resultMap ++ map, resultText + text)
       }
 
+    val cleanedText = concatenateSplitWords(text)
+      .flatMap(
+        char =>
+          if (Character.isLetter(char) || char == ' ') {
+            Some(char.toLower)
+          } else {
+            None
+          }
+      )
+      .sentences
+      .flatMap(_.words())
+      .map(stemmer.stem)
+      .groupBy(identity)
+      .map(data => data._1 -> data._2.length)(collection.breakOut[Map[String, Array[String]], (String, Int), Seq[(String, Int)]])
+
     log.debug("Email with id {} cleaned", email.id)
 
-    CleansedEmail(
+    CleansedData(
       id = email.id,
-      data = cleanPlain(text),
+      data = cleanedText,
       `type` = email.`type`,
-      htmlTags = htmlTags
+      htlmTags = htmlTags
     )
   }
 
@@ -113,26 +188,33 @@ class CleanDataWorker(
   }
 
   private def cleanPlain(text: String): Array[Double] = {
-    val bags = concatenateSplitWords(text).bag("porter")
-    val features = bags.toSeq.sortBy(_._2).toMap
+    //TODO change porter with configuration
+    val bags = concatenateSplitWords(text).bag()
+    val features = bags.toSeq.sortWith(_._2 > _._2)
     val count = if (features.size < takeFeatures) {
       features.size
     } else {
       takeFeatures
     }
-    vectorize(features.keySet.take(count).toArray, bags)
-  }
+    val result = vectorize(
+      features
+        .map(_._1)(collection.breakOut[Seq[(String, Int)], String, Set[String]])
+        .take(count)
+        .toArray,
+      bags
+    )
 
-//  implicit def convertToDoubleArray: Array[Double] => Array[Double] = identity
-
-  implicit def convertToSparseArray(array: Array[Double]): SparseArray =
-    array
-      .foldLeft(0, new SparseArray()) {
-        case ((i, sparseArray), value) =>
-          sparseArray.set(i, value)
-          i + 1 -> sparseArray
+    if (result.length < takeFeatures) {
+      val different = takeFeatures - result.length
+      val differentFill = Vector.fill(different) {
+        0.0
       }
-      ._2
+
+      result ++ differentFill
+    } else {
+      result
+    }
+  }
 
   private def cleanHtml(body: String): (Map[String, Int], String) = removeHtml(body)
 }

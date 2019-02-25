@@ -2,7 +2,7 @@ package eu.kohout.loaddata
 import akka.actor.{ActorRef, ActorSystem}
 import com.google.inject.{AbstractModule, Provides, Singleton}
 import com.typesafe.config.Config
-import eu.kohout.cleandata.CleanDataManagerTag
+import eu.kohout.tags.{CleanDataManagerTag, LoadDataManagerTag, ResultsAggregatorTag}
 
 class LoadDataModule extends AbstractModule {
 
@@ -12,9 +12,10 @@ class LoadDataModule extends AbstractModule {
   def loadDataManager(
     config: Config,
     actorSystem: ActorSystem,
-    @CleanDataManagerTag cleanDataManager: ActorRef
+    @CleanDataManagerTag cleanDataManager: ActorRef,
+    @ResultsAggregatorTag resultsAggregator: ActorRef
   ): ActorRef = LoadDataManager.asClusterSingleton(
-    LoadDataManager.props(config, cleanDataManager),
+    LoadDataManager.props(config, cleanDataManager, resultsAggregator),
     config,
     actorSystem
   )

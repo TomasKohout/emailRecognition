@@ -1,15 +1,16 @@
 package eu.kohout
 
 import akka.actor.{ActorRef, ActorSystem}
-import com.google.inject.name.Names
 import com.google.inject.{AbstractModule, Guice, Injector, Key}
 import com.typesafe.scalalogging.Logger
 import eu.kohout.actorsystem.ActorSystemModule
+import eu.kohout.aggregator.ResultsAggregatorModule
 import eu.kohout.cleandata.CleanDataModule
 import eu.kohout.config.ConfigModule
-import eu.kohout.loaddata.{LoadDataManagerTag, LoadDataModule}
+import eu.kohout.loaddata.LoadDataModule
 import eu.kohout.model.manager.ModelModule
 import eu.kohout.rest.RestModule
+import eu.kohout.tags.LoadDataManagerTag
 
 object Application {
 
@@ -19,7 +20,8 @@ object Application {
     new ConfigModule,
     new ModelModule,
     new CleanDataModule,
-    new LoadDataModule
+    new LoadDataModule,
+    new ResultsAggregatorModule
   )
 
   def main(args: Array[String]): Unit = {

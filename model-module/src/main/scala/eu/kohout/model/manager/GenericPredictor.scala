@@ -5,6 +5,8 @@ import eu.kohout.model.manager.messages.ModelMessages.{CleansedEmail, PredictRes
 import eu.kohout.model.manager.traits.Predictor
 import smile.classification.Classifier
 
+import scala.util.Try
+
 object GenericPredictor {
   val name: String => String = _ + "Predictor"
   def props: Props = Props(new GenericPredictor)
@@ -12,7 +14,7 @@ object GenericPredictor {
 
 class GenericPredictor extends Actor with Predictor {
 
-  override val log = Logger(context.self.path.name)
+  override val log = Logger(context.self.path.toStringWithoutAddress)
 
   override def receive: Receive = {
     case updateModel: UpdateModel =>
@@ -27,10 +29,25 @@ class GenericPredictor extends Actor with Predictor {
     case predict: CleansedEmail =>
       val replyTo = sender()
 
+      val result = Try(model.predict(predict.data))
+
+      if (result.isFailure) {
+        val throwable = result.failed.get
+        log.error("{}", throwable.getStackTrace)
+        throwable.printStackTrace()
+      }
       replyTo ! PredictResult(
         id = predict.id,
-        result = model.predict(predict.data),
+        result = result.getOrElse(-1),
         `type` = predict.`type`
       )
+  }
+
+  override def preRestart(
+    reason: Throwable,
+    message: Option[Any]
+  ): Unit = {
+    super.preRestart(reason, message)
+    self ! UpdateModel(serializer.toXML(model))
   }
 }

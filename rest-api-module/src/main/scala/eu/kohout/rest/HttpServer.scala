@@ -1,6 +1,6 @@
 package eu.kohout.rest
 import akka.Done
-import akka.actor.{ActorRef, ActorSystem}
+import akka.actor.ActorSystem
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.marshalling.Marshal
 import akka.http.scaladsl.model.{HttpResponse, ResponseEntity}
@@ -9,7 +9,8 @@ import akka.http.scaladsl.server.Directives._
 import akka.stream.Materializer
 import com.typesafe.config.Config
 import de.heikoseeberger.akkahttpcirce.FailFastCirceSupport
-import eu.kohout.rest.HttpServer.{Configuration, EmailRecognitionRequest, TrainRequest}
+import eu.kohout.rest.HttpServer.Configuration
+import eu.kohout.types.HttpMessages.{EmailRecognitionRequest, TrainRequest}
 import io.circe.Json
 import io.circe.generic.auto._
 import io.circe.syntax._
@@ -58,7 +59,7 @@ class HttpServer(
             entity(as[TrainRequest]) { entity =>
               val response = httpServerHandler
                 .train(entity)
-                .flatMap(result => Marshal(Json.obj()).to[ResponseEntity])
+                .flatMap(_ => Marshal(Json.obj()).to[ResponseEntity])
 
               onSuccess(response) { responseEntity =>
                 complete(HttpResponse(entity = responseEntity))

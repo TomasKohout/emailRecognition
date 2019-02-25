@@ -1,4 +1,4 @@
-package eu.kohout.loaddata;
+package eu.kohout.tags;
 
 import com.google.inject.BindingAnnotation;
 import java.lang.annotation.Target;
