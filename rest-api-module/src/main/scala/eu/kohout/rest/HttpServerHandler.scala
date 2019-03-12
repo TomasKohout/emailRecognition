@@ -1,8 +1,9 @@
 package eu.kohout.rest
+
 import akka.actor.ActorRef
 import akka.pattern.ask
 import akka.util.Timeout
-import eu.kohout.types.HttpMessages.{EmailRecognitionRequest, EmailRecognitionResponse, TrainRequest}
+import eu.kohout.rest.HttpMessages.{EmailRecognitionRequest, EmailRecognitionResponse, TrainRequest}
 
 import scala.concurrent.{ExecutionContext, Future}
 

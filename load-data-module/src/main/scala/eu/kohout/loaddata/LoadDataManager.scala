@@ -1,50 +1,20 @@
 package eu.kohout.loaddata
+
 import java.io.File
 
-import akka.actor.{Actor, ActorRef, ActorSystem, PoisonPill, Props}
-import akka.cluster.routing.{ClusterRouterPool, ClusterRouterPoolSettings}
-import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
-import akka.routing.RoundRobinPool
+import akka.actor.{Actor, ActorRef, Cancellable, Props}
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
-import eu.kohout.loaddata.LoadDataWorker.{DecreaseForError, LoadedTrainData}
-import eu.kohout.parser.{Email, EmailType}
-import eu.kohout.cleandata.CleanDataManager.TrainData
-import eu.kohout.parser.EmailType.{Ham, Spam}
-import eu.kohout.types.Types.LoadTestData
+import eu.kohout.cleandata.CleanDataManager.{CleanDataForDictionary, TrainData}
+import eu.kohout.loaddata.LoadDataWorker.LoadTestData
+import eu.kohout.parser.Email
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
-import scala.io.Source
 
 object LoadDataManager {
 
   val name = "LoadData"
-
-  def asClusterSingleton(
-    props: Props,
-    appCfg: Config,
-    system: ActorSystem
-  ): ActorRef = {
-
-    val singleton = system.actorOf(
-      ClusterSingletonManager.props(
-        singletonProps = props,
-        terminationMessage = PoisonPill,
-        settings = ClusterSingletonManagerSettings(system)
-      ),
-      name = name + "Manager"
-    )
-
-    system.actorOf(
-      ClusterSingletonProxy.props(
-        singletonManagerPath = singleton.path.toStringWithoutAddress,
-        settings = ClusterSingletonProxySettings(system)
-      ),
-      name = name + "Proxy"
-    )
-
-  }
 
   def props(
     config: Config,
@@ -52,177 +22,263 @@ object LoadDataManager {
     resultsAggregator: ActorRef
   ): Props = Props(new LoadDataManager(config, cleanDataManager, resultsAggregator))
 
-  case class LoadDataFromPath(path: File) extends LoadDataManagerMessages
-
-  sealed trait LoadDataManagerMessages
-
-  private object Configuration {
-    val configPath = "load-data"
-    val numberOfWorkersPath = s"$configPath.number-of-workers"
-    val dataPath = s"$configPath.data"
-    val labelsPath = s"$configPath.labels"
-    val trainDataSize = s"$configPath.train-data-size"
-    val sizeLimit = s"$configPath.size-limit"
-  }
-
   private type LoadDataWorkers = ActorRef
 
-  private type FileName = String
+  case object CreateDictionaryFromData extends LoadDataManagerMessages
+  case object LoadData extends LoadDataManagerMessages
+  case object DictionaryExists extends LoadDataManagerMessages
+  case object StartCrossValidation extends LoadDataManagerMessages
+  case object ContinueCrossValidation extends LoadDataManagerMessages
+
+  case class DecreaseForError(exception: Option[Throwable]) extends LoadDataManagerMessages
+
+  case class LoadedData(
+    email: Email,
+    file: String)
+      extends LoadDataManagerMessages
+
+  sealed trait LoadDataManagerMessages
 }
 
 class LoadDataManager(
-  config: Config,
-  cleanDataManager: ActorRef,
-  resultsAggregator: ActorRef)
-    extends Actor {
+  val config: Config,
+  val cleanDataManager: ActorRef,
+  val resultsAggregator: ActorRef)
+    extends Actor
+    with LoadDataManagerLogic {
   import LoadDataManager._
 
-  private val log = Logger(self.path.toStringWithoutAddress)
+  override protected val log: Logger = Logger(self.path.toStringWithoutAddress)
+
+  override protected var splitedFiles: List[Array[File]] = splitForCrossValidation(emailsDir.listFiles())
+
+  override protected val allFiles: Array[File] = splitedFiles.flatMap(_.map(identity)).toArray
+
   implicit private val ec: ExecutionContext = context.dispatcher
-  // map that hold information about type (spam/ham) of email stored in specific file
-  private var emailTypes: Map[FileName, EmailType] = _
-  private var loadedTrainData: Seq[Email] = Seq.empty
-  private var sizeOfTrainData = 0
 
-  private val workers: ActorRef = createWorkers()
+  private var sendToCleaningAfter: Option[Cancellable] = None
 
-  private val takeAmountForTraining: Int => Int = _ / 100 * config.getInt(Configuration.trainDataSize)
+  private var dictionaryResolver: LoadDataWorkers = _
 
-  private val sizeLimit = config.getInt(Configuration.sizeLimit)
+  private def dictionaryExists: Receive = {
+    case StartCrossValidation =>
+      log.info("Starting cross validation")
+      context.become(crossValidation)
+      self ! StartCrossValidation
 
-  private var testDataPaths: Array[File] = Array.empty
+    case _ =>
+      ()
+//    case decreaseForError: DecreaseForError =>
+//      log.error("Error occured: ", decreaseForError.exception.getMessage)
+//      decreaseForError.exception.printStackTrace()
+//
+//      howManyEmailsToLoad = howManyEmailsToLoad - 1
+//      log.debug("sizeOfTrainData {}", howManyEmailsToLoad)
+//      if (howManyEmailsToLoad == 0) {
+//        cleanDataManager ! TrainData(soFarLoadedData)
+//        context.system.scheduler.scheduleOnce(3 minutes, self, LoadTestData)
+//        soFarLoadedData = Seq.empty
+//      }
+//      ()
+//
+//    case loadedData: LoadedData =>
+//      soFarLoadedData = loadedData.email +: soFarLoadedData
+//      howManyEmailsToLoad = howManyEmailsToLoad - 1
+//
+//      log.debug("sizeOfTrainData {}", howManyEmailsToLoad)
+//      if (howManyEmailsToLoad == 0) {
+//        cleanDataManager ! TrainData(soFarLoadedData)
+//        context.system.scheduler.scheduleOnce(4 minutes, self, LoadTestData)
+//        soFarLoadedData = Seq.empty
+//      }
+//
+//      ()
+//
+//    case LoadData =>
+//      log.debug("Loading data from path: {}", emailsDir.getAbsolutePath)
+//
+//      val files = splitedFiles match {
+//        case Nil =>
+//          log.info("Cross validation has been completely done.")
+//          Array.empty
+//        case x :: Nil =>
+//          splitedFiles = Nil
+//          x
+//        case x :: xs =>
+//          splitedFiles = xs
+//          x
+//      }
+//
+//      val groupedByType = files
+//        .flatMap { file =>
+//          emailTypes
+//            .get(file.getName)
+//            .map((_, file))
+//        } //group by email Type
+//        .groupBy(_._1)
+//
+//      val hamMails = groupedByType.get(Ham)
+//      val spamMails = groupedByType.get(Spam)
+//
+//      //TODO this could be problem. Data sets does not have to be the same size
+//      val (spamTrain, spamTest) = spamMails.getOrElse(Array.empty).splitAt(takeAmountForTraining(files.length))
+//      val (hamTrain, hamTest) = hamMails.getOrElse(Array.empty).splitAt(takeAmountForTraining(files.length))
+//
+//      val trainData = spamTrain ++ hamTrain
+//
+//      testDataPaths = spamTest.map(_._2) ++ hamTest.map(_._2)
+//
+//      howManyEmailsToLoad = trainData.length
+//
+//      log.debug("Initial size of train data {}", howManyEmailsToLoad)
+//
+//      trainData
+//        .foreach {
+//          case (emailType, file) =>
+//            workers ! LoadDataWorker.LoadData(email = file, label = emailType)
+//        }
+//      ()
+//
+//    case LoadTestData =>
+//      testDataPaths
+//        .flatMap { file =>
+//          emailTypes.get(file.getName).map((_, file))
+//        }
+//        .foreach {
+//          case (emailType, file) =>
+//            workers ! LoadDataWorker.LoadData(email = file, label = emailType, sendNext = true)
+//        }
+  }
+  //
 
-  private def createWorkers(): ActorRef = {
-    val numberOfWorkers = config.getInt(Configuration.numberOfWorkersPath)
-    require(numberOfWorkers > 0, "At least one worker for loading data must be created!")
+  private def crossValidation: Receive = {
+    case StartCrossValidation =>
+      log.debug("Loading data from path: {}", emailsDir.getAbsolutePath)
 
-    context.actorOf(
-      ClusterRouterPool(
-        RoundRobinPool(numberOfWorkers),
-        ClusterRouterPoolSettings(totalInstances = 100, maxInstancesPerNode = numberOfWorkers, allowLocalRoutees = true)
-      ).props(LoadDataWorker.props(cleanDataManager, resultsAggregator))
-        .withDispatcher("clean-dispatcher"),
-      name = "LoadDataWorker"
-    )
+      val testFiles = splitedFiles match {
+        case Nil =>
+          log.info("Cross validation has been completely done.")
+          Array.empty[File]
+        case x :: Nil =>
+          splitedFiles = Nil
+          x
+        case x :: xs =>
+          splitedFiles = xs
+          x
+      }
+      log.debug("files length {}", testFiles.length)
+
+      val trainFiles = allFiles.diff(testFiles)
+
+      testDataPaths = testFiles
+
+      log.debug("after filtering, test length {}, train length {}", testFiles.length, trainFiles.length)
+
+      howManyEmailsToLoad = trainFiles.length
+
+      log.debug("Initial size of train data {}", howManyEmailsToLoad)
+
+      sendLoadedFiles(trainFiles, sendNext = false)
+
+    case ContinueCrossValidation =>
+      sendLoadedFiles(testDataPaths, sendNext = true)
+
+
+      testDataPaths = Array.empty
+    case decreaseForError: DecreaseForError =>
+      log.error("Error occured: ", decreaseForError.exception.map(_.getMessage))
+      acceptLoadMessage()
+
+    case loadedData: LoadedData =>
+      soFarLoadedData = loadedData.email +: soFarLoadedData
+      acceptLoadMessage()
+
+    case _ =>
+      ()
+
   }
 
-  override def receive: Receive = {
-
-    case decreaseForError: DecreaseForError =>
-      log.error("Error occured: ", decreaseForError.exception.getMessage)
-      decreaseForError.exception.printStackTrace()
-
-      sizeOfTrainData = sizeOfTrainData - 1
-      log.debug("sizeOfTrainData {}", sizeOfTrainData)
-      if (sizeOfTrainData == 0) {
-        cleanDataManager ! TrainData(loadedTrainData)
-        context.system.scheduler.scheduleOnce(3 minutes, self, LoadTestData)
+  def sendLoadedFiles(files: Array[File], sendNext: Boolean): Unit = {
+    files.flatMap(file => emailTypes.get(file.getName).map((_, file)))
+      .foreach {
+        case (label, file) =>
+          workers ! LoadDataWorker.LoadData(
+            email = file,
+            label = label,
+            sendNext = sendNext
+          )
       }
-      ()
+  }
 
-    case loadedData: LoadedTrainData =>
-      loadedTrainData = loadedData.email +: loadedTrainData
-      sizeOfTrainData = sizeOfTrainData - 1
-
-      log.debug("sizeOfTrainData {}", sizeOfTrainData)
-      if (sizeOfTrainData == 0) {
-        cleanDataManager ! TrainData(loadedTrainData)
-        context.system.scheduler.scheduleOnce(4 minutes, self, LoadTestData)
+  def acceptLoadMessage(): Unit = {
+    howManyEmailsToLoad = howManyEmailsToLoad - 1
+    sendToCleaningAfter = sendToCleaningAfter.fold(Some(context.system.scheduler.scheduleOnce(1 second, self, DecreaseForError(None)))) {
+      cancelable =>
+        cancelable.cancel()
+        Some(context.system.scheduler.scheduleOnce(1 second, self, DecreaseForError(None)))
+    }
+    log.debug("sizeOfTrainData {}", howManyEmailsToLoad)
+    if (howManyEmailsToLoad == 0) {
+      sendToCleaningAfter = sendToCleaningAfter.flatMap{c =>
+        c.cancel()
+        None
       }
+      cleanDataManager ! TrainData(soFarLoadedData)
+      soFarLoadedData = Seq.empty
+    }
+  }
 
-      ()
+  private def creationOfDictionary: Receive = {
+    case DictionaryExists =>
+      context.become(dictionaryExists)
+      self ! LoadData
 
-    case loadData: LoadDataFromPath =>
-      log.debug("Loading data from path: {}", loadData.path.getAbsolutePath)
+    case CreateDictionaryFromData =>
+      dictionaryResolver = sender()
+      log.debug("Loading data from path: {} for dictionary", emailsDir.getAbsolutePath)
 
-      val files = loadData.path
+      howManyEmailsToLoad = emailsDir.listFiles().length
+
+      emailsDir
         .listFiles()
-        .take(sizeLimit)
-
-      val groupedByType = files
         .flatMap { file =>
           emailTypes
             .get(file.getName)
             .map((_, file))
-        } //group by email Type
-        .groupBy(_._1)
-
-      val hamMails = groupedByType.get(Ham)
-      val spamMails = groupedByType.get(Spam)
-
-      //TODO this could be problem. Data sets does not have to be the same size
-      val (spamTrain, spamTest) = spamMails.getOrElse(Array.empty).splitAt(takeAmountForTraining(files.length))
-      val (hamTrain, hamTest) = hamMails.getOrElse(Array.empty).splitAt(takeAmountForTraining(files.length))
-
-      val trainData = spamTrain ++ hamTrain
-
-      testDataPaths = spamTest.map(_._2) ++ hamTest.map(_._2)
-
-      sizeOfTrainData = trainData.length
-
-      log.debug("Initial size of train data {}", sizeOfTrainData)
-
-      trainData
+        }
         .foreach {
           case (emailType, file) =>
-            workers ! LoadDataWorker.LoadTrainData(email = file, label = emailType)
+            workers ! LoadDataWorker.LoadData(email = file, label = emailType)
         }
       ()
 
-    case LoadTestData =>
-      testDataPaths
-        .flatMap { file =>
-          emailTypes.get(file.getName).map((_, file))
-        }
-        .foreach {
-          case (emailType, file) =>
-            workers ! LoadDataWorker.LoadTestData(email = file, label = emailType)
-        }
-  }
+    case decreaseForError: DecreaseForError =>
+      log.error("Error occured: {}, stack: {}", decreaseForError.exception.map(_.getMessage), decreaseForError.exception.map(_.getStackTrace))
 
-  private def splitLabelsRow(row: String): Option[(FileName, EmailType)] = {
-    val index = row.indexOf(" ")
-    if (index > 0) {
-      val (emailType, path) = row.splitAt(index)
+      howManyEmailsToLoad = howManyEmailsToLoad - 1
+      log.debug("sizeOfTrainData {}", howManyEmailsToLoad)
+      if (howManyEmailsToLoad == 0) {
+        cleanDataManager ! CleanDataForDictionary(soFarLoadedData, dictionaryResolver)
+        soFarLoadedData = Seq.empty
+      }
+      ()
 
-      val lastIndex = path.lastIndexOf("/")
+    case loadedData: LoadedData =>
+      soFarLoadedData = loadedData.email +: soFarLoadedData
+      howManyEmailsToLoad = howManyEmailsToLoad - 1
 
-      val fileName = if (lastIndex > 0 && lastIndex < path.length) {
-        Some(path.substring(lastIndex, path.length).replace("/", ""))
-      } else {
-        log.warn("{} does not satisfy label definitions", path)
-        None
+      log.debug("sizeOfTrainData {}", howManyEmailsToLoad)
+      if (howManyEmailsToLoad == 0) {
+        cleanDataManager ! CleanDataForDictionary(soFarLoadedData, dictionaryResolver)
+        soFarLoadedData = Seq.empty
       }
 
-      fileName.flatMap(name => EmailType.fromString(emailType).map((name, _)))
-    } else {
-      None
-    }
+      ()
+    case _ =>
+      ()
+
   }
 
-  private def createLabelMap(path: File): Map[FileName, EmailType] =
-    Source
-      .fromFile(path.getAbsolutePath)
-      .getLines
-      .toSeq
-      .flatMap(splitLabelsRow)(collection.breakOut[Seq[String], (FileName, EmailType), Map[FileName, EmailType]])
+  override def receive: Receive = creationOfDictionary
 
-  override def preStart(): Unit = {
-    super.preStart()
-
-    require(config.hasPath(Configuration.dataPath), s"This `${Configuration.dataPath}` can not be empty.")
-    require(config.hasPath(Configuration.labelsPath), s"This `${Configuration.labelsPath}` can not be empty.")
-
-    val emailsDir = new File(config.getString(Configuration.dataPath))
-    require(emailsDir.exists && emailsDir.isDirectory, s"Provided path is not a directory. ${emailsDir.getAbsolutePath}")
-
-    val labelsFile = new File(config.getString(Configuration.labelsPath))
-    require(labelsFile.exists && labelsFile.isFile, s"Provided path is not a file. ${Configuration.labelsPath}")
-
-    emailTypes = createLabelMap(labelsFile)
-    log.debug("Label map size {}", emailTypes.size)
-
-    log.debug("Sending message to self")
-    self ! LoadDataFromPath(emailsDir)
-  }
 }

@@ -37,5 +37,6 @@ object Dependencies {
   lazy val akkaHttpCirce = "de.heikoseeberger" %% "akka-http-circe" % Versions.heikoseebergCirce
   lazy val jclOverSlf4j = "org.slf4j" % "jcl-over-slf4j" % Versions.jclOverSlf4j
   lazy val commonsLoggingEmpty = "commons-logging" % "commons-logging" % Versions.commonsLoggingEmpty
+  lazy val symspell = "org.lundez" % "symspell" % "1.0-SNAPSHOT" from "file:///Users/tomaskohout/Downloads/JavaSymSpell-master/build/libs/symspell-1.0-SNAPSHOT.jar"
 
 }

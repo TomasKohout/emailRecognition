@@ -1,11 +1,13 @@
 package eu.kohout.model.manager
+
+import java.io.{File, FileWriter}
+
 import akka.actor.{Actor, ActorRef, Props}
 import akka.routing.Broadcast
 import com.typesafe.scalalogging.Logger
-import eu.kohout.model.manager.messages.ModelMessages.{CleansedEmail, Share, TrainSeq, UpdateModel}
+import ModelMessages._
 import eu.kohout.model.manager.traits.Trainer
 import smile.classification.{NaiveBayes, OnlineClassifier, SVM}
-import CleansedEmail._
 
 object GenericTrainer {
   val name: String => String = _ + "Trainer"
@@ -13,18 +15,21 @@ object GenericTrainer {
   def props(
     model: Unit => OnlineClassifier[Array[Double]],
     predictors: ActorRef,
-    shareAfter: Int = 1000
+    writeModelTo: String
   ): Props =
-    Props(new GenericTrainer(model = model(()), predictors = predictors, shareAfter = shareAfter))
+    Props(new GenericTrainer(modelCreator = model, predictors = predictors, writeModelTo))
 }
 
 class GenericTrainer(
-  override val model: OnlineClassifier[Array[Double]],
+  modelCreator: Unit => OnlineClassifier[Array[Double]],
   predictors: ActorRef,
-  override val shareAfter: Int)
+  writeModelTo: String)
     extends Actor
     with Trainer {
   override val log: Logger = Logger(self.path.toStringWithoutAddress)
+  private var version = 0
+
+  override var model: OnlineClassifier[Array[Double]] = modelCreator(())
 
   override def receive: Receive = {
     case data: TrainSeq =>
@@ -41,13 +46,30 @@ class GenericTrainer(
           svm.finish()
       }
 
-      self ! Share
+      sender() ! Trained
+      predictors ! Broadcast(UpdateModel(serializer.toXML(model)))
 
-    case Share =>
-      log.info("Sharing model to predictors")
-      val updateModel = UpdateModel(serializer.toXML(model))
-      predictors ! Broadcast(updateModel)
 
+    case WriteModels =>
+      val xmlModel = serializer.toXML(model)
+      val name = model match {
+        case _: NaiveBayes => "NaiveBayes"
+
+        case _: SVM[Array[Double]] => "SVM"
+
+        case _ => "other"
+      }
+
+      val writer = new FileWriter(new File(writeModelTo + "/" + name + version))
+      try {
+        writer.write(xmlModel)
+      } finally {
+        writer.close()
+        version = version + 1
+      }
+
+    case ForgotModel =>
+      model = modelCreator(())
   }
 
   override def preStart(): Unit =

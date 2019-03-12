@@ -1,89 +1,72 @@
 package eu.kohout.model.manager
-import akka.Done
-import akka.actor.{Actor, ActorRef, ActorSystem, PoisonPill, Props}
+
+import akka.actor.{Actor, ActorRef, Cancellable, PoisonPill, Props}
 import akka.cluster.routing.{ClusterRouterPool, ClusterRouterPoolSettings}
-import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
+import akka.cluster.singleton.{
+  ClusterSingletonManager,
+  ClusterSingletonManagerSettings,
+  ClusterSingletonProxy,
+  ClusterSingletonProxySettings
+}
+import akka.pattern.ask
 import akka.routing._
+import akka.util.Timeout
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
+import ModelMessages._
+import eu.kohout.aggregator.{Model, ModelType, ResultsAggregator}
+import eu.kohout.aggregator.ResultsAggregator.AfterPrediction
 import eu.kohout.model.manager.ModelManager.Configuration
-import eu.kohout.model.manager.messages.ModelMessages._
+import eu.kohout.parser.EmailType.{Ham, Spam}
 import smile.classification.{NaiveBayes, SVM}
-import smile.classification.NaiveBayes.Model
 import smile.math.kernel.{GaussianKernel, LinearKernel, MercerKernel}
-import akka.pattern.ask
-import akka.util.Timeout
-import eu.kohout.types.HttpMessages.EmailRecognitionResponse
-import eu.kohout.types.Labels.{Ham, Spam}
-import eu.kohout.types.{HttpMessages, ModelTypes}
 
-import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration._
+import scala.concurrent.{ExecutionContext, Future}
 
 object ModelManager {
   val name = "Model"
 
-  def asClusterSingleton(
-    props: Props,
-    appCfg: Config,
-    system: ActorSystem
-  ): ActorRef = {
-
-    val singleton = system.actorOf(
-      ClusterSingletonManager.props(
-        singletonProps = props,
-        terminationMessage = PoisonPill,
-        settings = ClusterSingletonManagerSettings(system)
-      ),
-      name = name + "Manager"
-    )
-
-    system.actorOf(
-      ClusterSingletonProxy.props(
-        singletonManagerPath = singleton.path.toStringWithoutAddress,
-        settings = ClusterSingletonProxySettings(system)
-      ),
-      name = name + "Proxy"
-    )
-
-  }
-
   object Configuration {
-    val config = "model"
+    val configPath = "model"
 
     trait GenericConfig {
-      val configPath: String
-      def shareAfter: String = s"$configPath.share-model-after"
+      protected def configPath: String
+      def shareAfter: String = "share-model-after"
       def numberOfPredictors: String = s"$configPath.number-of-predictors"
       def sigma: String = s"$configPath.sigma"
     }
 
     object NaiveBayes extends GenericConfig {
       val name = "NaiveBayes"
-      override val configPath: String = s"$config.naive-bayes"
+      override val configPath: String = "naive-bayes"
       val model = s"$configPath.model"
     }
 
     object SVM extends GenericConfig {
       val name = "svm"
-      override val configPath: String = s"$config.svm"
+      override val configPath: String = "svm"
       val kernel = s"$configPath.kernel"
     }
 
   }
+
   private def apply(
     config: Config,
+    rootActor: ActorRef,
     resultsAggregator: ActorRef
-  ): ModelManager = new ModelManager(config, resultsAggregator)
+  ): ModelManager = new ModelManager(config, rootActor, resultsAggregator)
 
   def props(
     config: Config,
+    rootActor: ActorRef,
     resultsAggregator: ActorRef
-  ): Props = Props(ModelManager(config, resultsAggregator))
+  ): Props = Props(ModelManager(config, rootActor, resultsAggregator))
 }
 
 class ModelManager(
   config: Config,
+  rootActor: ActorRef,
   resultsAggregator: ActorRef)
     extends Actor {
   private val log = Logger(self.path.toStringWithoutAddress)
@@ -92,8 +75,9 @@ class ModelManager(
   implicit private val timeout: Timeout = 5 seconds
   implicit private val ec: ExecutionContext = context.dispatcher
 
-  private val defaultTrainModels = Seq(ModelTypes.SVM, ModelTypes.NaiveBayes)
+  private val defaultTrainModels = Seq(ModelType.NaiveBayes, ModelType.SVM)
   private var htmlEvaluator: ActorRef = _
+  private var lastPredictionCheck: Option[Cancellable] = None
 
   private val naiveRoutees: ActorRef =
     createPredictors(
@@ -112,21 +96,24 @@ class ModelManager(
         new SVM[Array[Double]](chooseKernel(config.getString(Configuration.SVM.kernel)), 1.0, 2)
       },
       predictors = svmRoutees,
-      shareAfter = config.getInt(Configuration.SVM.shareAfter)
+      writeModelTo = config.getString("write-model-to")
     ),
-    specificConfig = config.getConfig("model.svm.trainer"),
+    specificConfig = config.getConfig("svm.trainer"),
     name = "SVMTrainer"
   )
 
-  private def receiveTrain(message: TrainSeq): Unit = {
-    if (message.models.isEmpty) defaultTrainModels
-    else message.models
-  }.foreach {
-    case ModelTypes.SVM =>
-      svmTrainer ! message
-    case ModelTypes.NaiveBayes =>
-      naiveTrainer ! message
-  }
+  private def receiveTrain(message: TrainSeq): Future[Unit] =
+    Future
+      .sequence({
+        if (message.models.isEmpty) defaultTrainModels
+        else message.models
+      }.map {
+        case ModelType.SVM =>
+          svmTrainer.ask(message)(timeout = 10 minutes)
+        case ModelType.NaiveBayes =>
+          naiveTrainer.ask(message)(timeout = 10 minutes)
+      })
+      .map(_ => rootActor ! ModelMessages.Trained)
 
   private def receivePredict(
     message: Predict,
@@ -148,32 +135,55 @@ class ModelManager(
       naiveResult <- naivePredict
       svmResult <- svmPredict
       resultModels = List(
-        HttpMessages.Model(
+        Model(
           naiveResult.result,
-          ModelTypes.NaiveBayes
+          ModelType.NaiveBayes
         ),
-        HttpMessages.Model(
+        Model(
           svmResult.result,
-          ModelTypes.SVM
+          ModelType.SVM
         )
       )
-      label = if (naiveResult.result == 1 || svmResult.result == 1) Ham else Spam
+      typeOfEmail = if (naiveResult.result == 1 && svmResult.result == -1) Ham
+      else if (naiveResult.result == -1 && svmResult.result == 1) Ham
+      else Spam
       percent = svmResult.result + naiveResult.result
-      result = EmailRecognitionResponse(id = message.data.id, label = label, percent = percent, models = resultModels)
+      result = AfterPrediction(id = message.data.id, `type` = typeOfEmail, percent = percent, models = resultModels)
     } yield {
       resultsAggregator ! result
-      replyTo ! result
     }
   }
 
   override def receive: Receive = {
+    case WriteModels =>
+      svmTrainer ! WriteModels
+      naiveTrainer ! WriteModels
+      svmTrainer ! ForgotModel
+      naiveTrainer ! ForgotModel
+      naiveRoutees ! Broadcast(ForgotModel)
+      svmRoutees ! Broadcast(ForgotModel)
     case message: TrainSeq =>
       receiveTrain(message)
+      ()
 
     case message: Predict =>
       val replyTo = sender()
       log.debug("Prediction for id {}", message.data.id)
       receivePredict(message, replyTo)
+      lastPredictionCheck = lastPredictionCheck.fold(
+        Some(
+          context.system.scheduler.scheduleOnce(30 seconds, rootActor, ModelMessages.LastPredictionMade)
+        )
+      ) { cancellable =>
+        cancellable.cancel()
+        Some(
+          context.system.scheduler.scheduleOnce(
+            30 seconds,
+            rootActor,
+            ModelMessages.LastPredictionMade
+          )
+        )
+      }
 
       ()
 
@@ -198,9 +208,9 @@ class ModelManager(
               )
             },
             predictors = naiveRoutees,
-            shareAfter = config.getInt(Configuration.NaiveBayes.shareAfter)
+            writeModelTo = config.getString("write-model-to")
           ),
-        specificConfig = config.getConfig("model.naive-bayes.trainer"),
+        specificConfig = config.getConfig("naive-bayes.trainer"),
         name = "NaiveTrainer"
       )
 
@@ -215,10 +225,11 @@ class ModelManager(
   ): ActorRef = {
     val singleton = context.actorOf(
       ClusterSingletonManager.props(
-        singletonProps = props,
+        singletonProps = props.withDispatcher("model-dispatcher"),
         terminationMessage = PoisonPill,
         settings = ClusterSingletonManagerSettings(specificConfig)
       )
+        .withDispatcher("model-dispatcher")
     )
 
     context.actorOf(
@@ -226,6 +237,7 @@ class ModelManager(
         singletonManagerPath = singleton.path.toStringWithoutAddress,
         settings = ClusterSingletonProxySettings(specificConfig)
       )
+        .withDispatcher("model-dispatcher")
     )
   }
 
@@ -243,15 +255,17 @@ class ModelManager(
           maxInstancesPerNode = numberOfPredictors,
           allowLocalRoutees = true
         )
-      ).props(GenericPredictor.props),
+      )
+        .props(GenericPredictor.props)
+        .withDispatcher("model-dispatcher"),
       name = GenericPredictor.name(modelName)
     )
   }
 
-  def chooseModel: String => Model = {
-    case "MULTINOMIAL" => Model.MULTINOMIAL
-    case "BERNOULLI"   => Model.BERNOULLI
-    case "POLYAURN"    => Model.POLYAURN
+  def chooseModel: String => NaiveBayes.Model = {
+    case "MULTINOMIAL" => NaiveBayes.Model.MULTINOMIAL
+    case "BERNOULLI"   => NaiveBayes.Model.BERNOULLI
+    case "POLYAURN"    => NaiveBayes.Model.POLYAURN
     case other =>
       throw new IllegalStateException(s"$other model is currently not supported!")
   }

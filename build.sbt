@@ -81,14 +81,13 @@ lazy val `rest-api-module` = (project in file("rest-api-module"))
   .settings(
     libraryDependencies ++= Seq(
       akkaHttp,
-      googleGuice,
       circeCore,
       circeGeneric,
       circeParser,
       akkaHttpCirce
     )
   )
-  .dependsOn(`model-module`, `clean-data-module`, `shared-types`)
+  .dependsOn(`model-module`, `clean-data-module`)
 
 lazy val `model-module` = (project in file("model-module"))
   .settings(
@@ -98,11 +97,10 @@ lazy val `model-module` = (project in file("model-module"))
       akkaDistributedData,
       akkaCluster,
       akkaClusterSharding,
-      googleGuice,
       smileCore
     )
   )
-  .dependsOn(`email-parser`, `shared-types`, `results-aggregator`)
+  .dependsOn(`email-parser`, `results-aggregator`)
 
 lazy val `clean-data-module` = (project in file("clean-data-module"))
   .settings(
@@ -112,11 +110,11 @@ lazy val `clean-data-module` = (project in file("clean-data-module"))
       akkaDistributedData,
       akkaCluster,
       akkaClusterSharding,
-      googleGuice,
-      smileCore
+      smileCore,
+      symspell
     )
   )
-  .dependsOn(`email-parser`,  `model-module`, `shared-types`)
+  .dependsOn(`email-parser`,  `model-module`)
 
 lazy val `load-data-module` = (project in file("load-data-module"))
   .settings(
@@ -125,81 +123,50 @@ lazy val `load-data-module` = (project in file("load-data-module"))
       akkaHttp,
       akkaDistributedData,
       akkaCluster,
-      akkaClusterSharding,
-      googleGuice
+      akkaClusterSharding
     )
   )
-  .dependsOn(`email-parser`, `clean-data-module`, `shared-types`)
+  .dependsOn(`email-parser`, `clean-data-module`, `results-aggregator`)
 
-lazy val `start-app-module` = (project in file("start-app-module"))
+lazy val `email-parser` = (project in file("email-parser"))
   .settings(
     libraryDependencies ++= Seq(
-      googleGuice
+      emailParser
     )
   )
+
+lazy val `aggregation` = (project in file("."))
   .dependsOn(
     `load-data-module`,
     `clean-data-module`,
     `model-module`,
     `rest-api-module`,
     `email-parser`,
-    `actor-system`,
-    `typesafe-config`,
-    `shared-types`
+    `dictionary-resolver`
   )
-
-lazy val `email-parser` = (project in file("email-parser"))
-  .settings(
-    libraryDependencies ++= Seq(
-      googleGuice,
-      emailParser
-    )
-  )
-  .dependsOn(`shared-types`)
-
-lazy val `actor-system` = (project in file("actor-system"))
-  .settings(
-    libraryDependencies ++= Seq(
-      akkaActor,
-      googleGuice
-    )
-  )
-
-lazy val `typesafe-config` = (project in file("typesafe-config"))
-  .settings(
-    libraryDependencies ++= Seq(
-      googleGuice,
-      typesafeConfig
-    )
-  )
-
-lazy val `aggregation` = (project in file("."))
   .aggregate(
     `load-data-module`,
     `clean-data-module`,
     `model-module`,
     `rest-api-module`,
     `email-parser`,
-    `typesafe-config`,
-    `actor-system`
-  )
-
-lazy val `shared-types` = (project in file("shared-types"))
-  .settings(
-    libraryDependencies ++= Seq(googleGuice)
+    `dictionary-resolver`
   )
 
 lazy val `results-aggregator` = (project in file("results-aggregator"))
-    .settings(
-      libraryDependencies ++= Seq(
-        googleGuice,
-        akkaActor,
-        akkaDistributedData,
-        akkaCluster,
-        akkaClusterSharding,
-      )
+  .settings(
+    libraryDependencies ++= Seq(
+      akkaActor,
+      akkaHttp,
+      akkaDistributedData,
+      akkaCluster,
+      akkaClusterSharding
     )
-    .dependsOn(`email-parser`, `shared-types`)
+  )
+  .dependsOn(`email-parser`)
+
+lazy val `dictionary-resolver` = (project in file("dictionary-resolver"))
+    .dependsOn(`clean-data-module`, `load-data-module`)
 
 assemblyMergeStrategy in assembly := {
   case "application.conf" => MergeStrategy.discard

@@ -3,67 +3,13 @@ import java.io.{ByteArrayInputStream, FileInputStream, InputStream}
 import java.time.Instant
 import java.util.{Scanner, UUID}
 
-import akka.actor.ActorRef
-import com.sun.net.httpserver.Authenticator.Failure
 import com.typesafe.scalalogging.Logger
+import eu.kohout.parser.BodyType.{HTML, PLAIN}
 import org.apache.james.mime4j.codec.DecodeMonitor
 import org.apache.james.mime4j.message.DefaultBodyDescriptorBuilder
 import org.apache.james.mime4j.parser.MimeStreamParser
 import org.apache.james.mime4j.stream.MimeConfig
-
-sealed trait BodyType
-
-case object HTML extends BodyType
-
-case object PLAIN extends BodyType
-
-case class BodyPart(
-  `type`: BodyType,
-  body: String)
-
-object EmailType {
-
-  private val log = Logger(getClass)
-
-  case object Spam extends EmailType {
-    override val y: Int = 0
-    override def name: String = "spam"
-  }
-  case object Ham extends EmailType {
-    override val y: Int = 1
-    override def name: String = "ham"
-  }
-  case object NotObtained extends EmailType {
-    override val y: Int = throw new IllegalStateException("NotObtained does not provide Y value!")
-    override def name: String = "not_obtained"
-  }
-
-  def fromString(str: String): Option[EmailType] =
-    str.toLowerCase match {
-      case "ham"  => Some(Ham)
-      case "spam" => Some(Spam)
-      case other =>
-        log.warn("{} is not ham nor spam", other)
-        Some(NotObtained)
-    }
-
-  def makeString: EmailType => String = {
-    case Ham         => "ham"
-    case Spam        => "spam"
-    case NotObtained => "not_obtained"
-  }
-}
-
-sealed trait EmailType {
-  def y: Int
-  def name: String
-}
-
-case class Email(
-  bodyParts: Seq[BodyPart],
-  id: String,
-  `type`: EmailType,
-  replyTo: Option[ActorRef] = None)
+;
 
 object EmailParser {
 

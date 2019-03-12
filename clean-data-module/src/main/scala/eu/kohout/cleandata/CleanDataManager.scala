@@ -1,88 +1,58 @@
 package eu.kohout.cleandata
-import java.util.UUID
-
-import akka.actor.{Actor, ActorRef, ActorSystem, PoisonPill, Props}
+import SymSpell.SymSpell
+import akka.actor.{Actor, ActorRef, Cancellable, Props, Stash}
 import akka.cluster.routing.{ClusterRouterPool, ClusterRouterPoolSettings}
-import akka.cluster.singleton.{
-  ClusterSingletonManager,
-  ClusterSingletonManagerSettings,
-  ClusterSingletonProxy,
-  ClusterSingletonProxySettings
-}
-
-import akka.routing._
+import akka.routing.{Broadcast, RoundRobinPool}
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
+import eu.kohout.aggregator.ModelType
 import eu.kohout.cleandata.CleanDataManager._
-import eu.kohout.model.manager.messages.ModelMessages.{CleansedEmail, FeatureSizeForBayes, Train, TrainSeq}
-import eu.kohout.parser.EmailType.{Ham, Spam}
+import eu.kohout.model.manager.ModelMessages.{CleansedEmail, TrainSeq}
 import eu.kohout.parser.{Email, EmailType}
-import eu.kohout.types.ModelTypes
-
 import smile.feature.Bag
 import smile.nlp.stemmer.{LancasterStemmer, PorterStemmer, Stemmer}
+
+import scala.concurrent.duration._
 
 object CleanDataManager {
   val name: String = "CleanData"
 
-  def asClusterSingleton(
-    props: Props,
-    appCfg: Config,
-    system: ActorSystem
-  ): ActorRef = {
-
-    val singleton = system
-      .actorOf(
-        ClusterSingletonManager
-          .props(
-            singletonProps = props.withDispatcher("clean-dispatcher"),
-            terminationMessage = PoisonPill,
-            settings = ClusterSingletonManagerSettings(system)
-          )
-          .withDispatcher("clean-dispatcher"),
-        name = name + "Manager"
-      )
-
-    system.actorOf(
-      ClusterSingletonProxy
-        .props(
-          singletonManagerPath = singleton.path.toStringWithoutAddress,
-          settings = ClusterSingletonProxySettings(system)
-        )
-        .withDispatcher("clean-dispatcher"),
-      name = name + "Proxy"
-    )
-
-  }
-
   def props(
-    config: Config,
-    modelManager: ActorRef
-  ): Props = Props(new CleanDataManager(config = config, modelManager = modelManager))
+             config: Config,
+             modelManager: ActorRef
+           ): Props = Props(new CleanDataManager(config = config, modelManager = modelManager))
 
-  private object Configuration {
+  object Configuration {
     val configPath = "clean-data"
-    val numberOfWorkersPath = s"$configPath.number-of-workers"
-    val takeFeatures = s"$configPath.take-features"
-    val stemmer = s"$configPath.stemmer"
-    val stopWords = s"$configPath.stop-words"
+    val numberOfWorkersPath = "number-of-workers"
+    val stemmer = "stemmer"
+    val stopWords = "stop-words"
+    val symspellDictionary = "symspell-dictionary"
+
   }
 
   case class TrainData(
-    emails: Seq[Email],
-    models: Seq[ModelTypes] = Seq.empty)
-      extends CleanDataManagerMessages
+                        emails: Seq[Email],
+                        models: Seq[ModelType] = Seq.empty)
+    extends CleanDataManagerMessages
+
+  case class CleanDataForDictionary(
+                                     emails: Seq[Email],
+                                     replyTo: ActorRef)
+    extends CleanDataManagerMessages
 
   case class CleanData(email: Email) extends CleanDataManagerMessages
 
   case class CleansedData(
-    id: String,
-    data: Seq[(String, Int)],
-    `type`: EmailType,
-    htlmTags: Map[String, Int])
-      extends CleanDataManagerMessages
+                           id: String,
+                           data: Seq[(String, Int)],
+                           `type`: EmailType,
+                           htlmTags: Map[String, Int])
+    extends CleanDataManagerMessages
 
   case class DecreaseSizeBecauseOfError(throwable: Throwable) extends CleanDataManagerMessages
+
+  case class Dictionary(data: Seq[CleansedData]) extends CleanDataManagerMessages
 
   case class TestData(email: Email) extends CleanDataManagerMessages
 
@@ -92,32 +62,52 @@ object CleanDataManager {
 
   case class ShareBag(bag: Bag[String]) extends CleanDataManagerMessages
 
+  case object GetBag extends CleanDataManagerMessages
+
+  case object ContinueProcess extends CleanDataManagerMessages
+
+  case class ShareSymspell(symSpell: SymSpell) extends CleanDataManagerMessages
+
   sealed trait CleanDataManagerMessages
 }
 
 class CleanDataManager(
   config: Config,
   modelManager: ActorRef)
-    extends Actor {
+    extends Actor with Stash {
 
   private val log = Logger(self.path.toStringWithoutAddress)
-  private val takeFeatures = config.getInt(Configuration.takeFeatures)
 
+  private var dictionaryResolver: ActorRef = _
   private var bag: Bag[String] = _
   private var sizeOfTrainData = 0
   private var cleansedDatas: Seq[CleansedData] = Seq.empty
   private var trainDatas: Seq[CleansedEmail] = Seq.empty
 
-  private val workers: ActorRef = createWorkers()
+  private var cancelable: Option[Cancellable] = None
 
-  override def receive: Receive = {
+  private val symspell = {
+    val symSpell = new SymSpell(-1 , 3, -1 , 1)
+    symSpell.loadDictionary(config.getString(Configuration.symspellDictionary), 0, 1)
+    symSpell
+  }
+
+  private val workers: ActorRef = createWorkers(symspell)
+
+  private def withDictionary: Receive = {
+    case msg: TestData =>
+      workers ! msg
+
+    case GetBag =>
+      sender() ! ShareBag(bag)
 
     case error: DecreaseSizeBecauseOfError =>
       sizeOfTrainData = sizeOfTrainData - 1
-      log.error("Error when cleaning data {}", error.throwable.getMessage)
+      log.error("Error when cleaning data {}, {}", error.throwable.getMessage, error.throwable.getStackTrace.map(_.toString).mkString("\n"))
 
       if (sizeOfTrainData == 0) {
         modelManager ! TrainSeq(trainDatas)
+        trainDatas = Seq.empty
       }
       ()
     case cleansedData: CleansedData =>
@@ -125,32 +115,8 @@ class CleanDataManager(
       cleansedDatas = cleansedData +: cleansedDatas
       sizeOfTrainData = sizeOfTrainData - 1
       log.debug("CleansedData size of sizeOfTrainData {}", sizeOfTrainData)
+
       if (sizeOfTrainData == 0) {
-        val groupedByType = cleansedDatas.groupBy(_.`type`)
-
-        val hamFeatures = groupedByType
-          .getOrElse(Ham, Seq.empty)
-          .flatMap(_.data)
-          .sortWith(_._2 > _._2)
-          .take(takeFeatures)
-          .map(_._1)
-
-        val spamFeatures = groupedByType
-          .getOrElse(Spam, Seq.empty)
-          .flatMap(_.data)
-          .sortWith(_._2 > _._2)
-          .take(takeFeatures)
-          .map(_._1)
-
-        val features = hamFeatures
-          .intersect(spamFeatures)
-          .foldLeft((hamFeatures ++ spamFeatures).toSet)((featuresSet, string) => featuresSet - string)
-
-        bag = new Bag(features.toArray)
-
-        modelManager ! FeatureSizeForBayes(features.size)
-
-        workers ! Broadcast(ShareBag(bag))
 
         cleansedDatas
           .foreach(workers !)
@@ -160,14 +126,15 @@ class CleanDataManager(
       }
       ()
 
-    case trainData: Train =>
-      log.debug("TrainData received {}", trainData.data.id)
-      trainDatas = trainData.data +: trainDatas
+    case trainData: CleansedEmail =>
+      log.debug("TrainData received {}", trainData.id)
+      trainDatas = trainData +: trainDatas
       sizeOfTrainData = sizeOfTrainData - 1
 
       log.debug("Train sizeOfTrainData {}", sizeOfTrainData)
       if (sizeOfTrainData == 0) {
         modelManager ! TrainSeq(trainDatas)
+        trainDatas = Seq.empty
       }
 
     case message: TrainData =>
@@ -180,23 +147,74 @@ class CleanDataManager(
           workers ! CleanData(email)
         }
 
-    case message: TestData =>
-      log.info("Test email received: ", message.email.id)
-      workers ! message
+    case other =>
+      log.warn(s"Unexpected message recieved: $other ")
 
-    case email: EmailCleaned =>
-      log.debug("email cleaned: ", email.id)
+  }
 
-    case email: EmailNotCleaned =>
-      log.debug("email was not cleaned: ", email.id)
+  override def receive: Receive = {
+    case _: TrainData =>
+      stash()
+
+    case _: TestData =>
+      stash()
+
+    case ContinueProcess =>
+      if(sizeOfTrainData != 0){
+        dictionaryResolver ! Dictionary(cleansedDatas)
+        cleansedDatas = Seq.empty
+      }
+
+    case CleanDataForDictionary(data, replyTo) =>
+      dictionaryResolver = replyTo
+      sizeOfTrainData = data.size
+
+      data
+        .foreach { email =>
+          workers ! CleanData(email)
+        }
+
+
+    case error: DecreaseSizeBecauseOfError =>
+      sizeOfTrainData = sizeOfTrainData - 1
+      log.error("Error when cleaning data {}, stack: {}", error.throwable.getMessage, error.throwable.getStackTrace.map(_.toString).mkString("\n"))
+
+      cancelable.map(_.cancel())
+      cancelable = Some(context.system.scheduler.scheduleOnce(1 minute, self, ContinueProcess )(context.dispatcher))
+
+      if (sizeOfTrainData == 0) {
+        dictionaryResolver ! Dictionary(cleansedDatas)
+        cleansedDatas = Seq.empty
+      }
+
+    case cleansedData: CleansedData =>
+      log.debug("Cleansed data received {}", cleansedData.id)
+      cleansedDatas = cleansedData +: cleansedDatas
+      sizeOfTrainData = sizeOfTrainData - 1
+      log.debug("CleansedData size of sizeOfTrainData {}", sizeOfTrainData)
+
+      cancelable.map(_.cancel())
+      cancelable = Some(context.system.scheduler.scheduleOnce(1 minute, self, ContinueProcess )(context.dispatcher))
+
+      if (sizeOfTrainData == 0) {
+        dictionaryResolver ! Dictionary(cleansedDatas)
+        cleansedDatas = Seq.empty
+      }
+
+
+    case msg: ShareBag =>
+      bag = msg.bag
+      workers ! Broadcast(msg)
+      context.become(withDictionary)
+
+      unstashAll()
 
     case other =>
       log.warn(s"Unexpected message recieved: $other ")
 
   }
 
-  private def createWorkers(): ActorRef = {
-    log.info("Creating workers")
+  private def createWorkers(symspell: SymSpell): ActorRef = {
     val numberOfWorkers = config.getInt(Configuration.numberOfWorkersPath)
     require(numberOfWorkers > 0, "At least one worker for cleaning data must be created!")
 
@@ -205,23 +223,26 @@ class CleanDataManager(
       !stopWords.contains(",") || !stopWords.contains(" "),
       "stop-words setting is either one of 'default', 'google', 'mysql', or words separated by ','"
     )
-    context.actorOf(
+    val workers = context.actorOf(
       ClusterRouterPool(
         RoundRobinPool(numberOfWorkers),
         ClusterRouterPoolSettings(totalInstances = numberOfWorkers * 10, maxInstancesPerNode = numberOfWorkers, allowLocalRoutees = true)
       ).props(
           CleanDataWorker
             .props(
+              symspell = symspell,
               modelManager = modelManager,
-              stemmer = createStemmer(config.getString(Configuration.stemmer)),
-              takeFeatures = config.getInt(Configuration.takeFeatures),
-              stopWords = config.getString(Configuration.stopWords)
+              stopWords = config.getString(Configuration.stopWords),
+              config = config,
+              stemmer = _ => createStemmer(config.getString(Configuration.stemmer))
             )
             .withDispatcher("clean-dispatcher")
         )
         .withDispatcher("clean-dispatcher"),
       name = CleanDataWorker.workerName
     )
+
+    workers
   }
 
   private def createStemmer: String => Stemmer = {
@@ -229,4 +250,5 @@ class CleanDataManager(
     case "LANCASTER" => new LancasterStemmer
     case other       => throw new IllegalStateException(s"$other is currently not supportet stemmer. Use 'LANCASTER' or 'PORTER' stemmer.")
   }
+
 }

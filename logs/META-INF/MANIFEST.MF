@@ -1,0 +1,9 @@
+Manifest-Version: 1.0
+Implementation-Title: sc_sbt-plugin-api
+Implementation-Version: 3.15-r1
+Specification-Vendor: com.finfactory
+Specification-Title: sc_sbt-plugin-api
+Implementation-Vendor-Id: com.finfactory
+Specification-Version: 3.15-r1
+Implementation-Vendor: com.finfactory
+

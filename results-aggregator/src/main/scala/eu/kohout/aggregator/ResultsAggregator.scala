@@ -1,73 +1,64 @@
 package eu.kohout.aggregator
-import java.io.{File, PrintWriter}
-import java.time.Instant
 
-import akka.actor.{Actor, ActorRef, ActorSystem, PoisonPill, Props}
+import java.io.{File, PrintWriter}
+
+import akka.actor.{Actor, ActorRef, ActorSystem, Cancellable, PoisonPill, Props}
 import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
-import eu.kohout.aggregator.ResultsAggregator.{PrintResults, Result}
-import eu.kohout.types.HttpMessages.EmailRecognitionResponse
-import eu.kohout.types.Labels
-import eu.kohout.types.ResultsAggreagtorMessages.BeforePrediction
+import eu.kohout.aggregator.ResultsAggregator._
+import eu.kohout.parser.EmailType
 
 import scala.collection.mutable
-import scala.concurrent.duration._
 
 object ResultsAggregator {
 
   val name = "ResultsAggregator"
 
-  def asClusterSingleton(
-    props: Props,
-    appCfg: Config,
-    system: ActorSystem
-  ): ActorRef = {
-
-    val singleton = system.actorOf(
-      ClusterSingletonManager.props(
-        singletonProps = props,
-        terminationMessage = PoisonPill,
-        settings = ClusterSingletonManagerSettings(system)
-      ),
-      name = name
-    )
-
-    system.actorOf(
-      ClusterSingletonProxy.props(
-        singletonManagerPath = singleton.path.toStringWithoutAddress,
-        settings = ClusterSingletonProxySettings(system)
-      ),
-      name = name + "Proxy"
-    )
-  }
-
   def props: Props = Props(new ResultsAggregator)
+
+  case class BeforePrediction(
+    id: String,
+    `type`: EmailType)
+      extends ResultsAggregatorMessages
+
+  case class AfterPrediction(
+    id: String,
+    `type`: EmailType,
+    percent: Int,
+    models: List[Model])
+      extends ResultsAggregatorMessages
 
   case class Result(
     beforePrediction: BeforePrediction,
-    prediction: Option[EmailRecognitionResponse] = None)
+    prediction: Option[AfterPrediction] = None)
+      extends ResultsAggregatorMessages
 
-  private case object PrintResults
+  case object WriteResults extends ResultsAggregatorMessages
+
+  sealed trait ResultsAggregatorMessages
 }
 
 class ResultsAggregator extends Actor {
   private val log = Logger(self.path.toStringWithoutAddress)
   private val results: mutable.Map[String, Result] = mutable.Map.empty
 
+  private var cancellable: Option[Cancellable] = None
+
   //todo add configuration for results
   private val resultsDir = "/Users/tomaskohout/results"
+  private var countOfResult = 0
 
-  override def receive: Receive = {
-    case result: EmailRecognitionResponse =>
+  private def writeResults: Receive = {
+    case result: AfterPrediction =>
       log.debug("After prediction for id {} received!", result.id)
-      log.debug("Before$$$ {}", results.get(result.id))
+      log.debug("Before### {}", results.get(result.id))
       results
         .get(result.id)
         .map(_.copy(prediction = Some(result)))
         .map(results += result.id -> _)
 
-      log.debug("After$$$ {}", results.get(result.id))
+      log.debug("After### {}", results.get(result.id))
       ()
 
     case beforePrediction: BeforePrediction =>
@@ -75,44 +66,44 @@ class ResultsAggregator extends Actor {
       results += (beforePrediction.id -> Result(beforePrediction))
       ()
 
-    case PrintResults =>
-      val path = new File(resultsDir + "/" + Instant.now().toString + ".json")
-      val writer = new PrintWriter(path)
+    case WriteResults =>
 
-      val result = results
-        .toSeq
+      val result = results.toSeq
         .filter(_._2.prediction.isDefined)
-        .map{
+        .map {
           case (key, value) =>
             val prediction = value.prediction.get
             val before = value.beforePrediction
 
-            (before.`type`, prediction.label, before.`type` == prediction.label)
+            (before.`type`, prediction.`type`, before.`type` == prediction.`type`)
 
         }
 
-      val path1 = new File(resultsDir + "/" + Instant.now().toString + "Results.json")
+      val path1 = new File(resultsDir + "/"  + "ResultsTable" + countOfResult + ".json")
       val writer1 = new PrintWriter(path1)
 
-      val table = result.map{ res =>
-        s"""
-          | "${res._1}" | "${res._2}" | "${res._3}"
+      val table = result
+        .map { res =>
+          s"""
+             | "${res._1}" | "${res._2}" | "${res._3}"
         """.stripMargin
-      }.mkString("Before | After | Match", "\n", "")
+        }
+        .mkString("Before | After | Match", "\n", "")
 
       val matched = result.filter(_._3).count(_._3)
-
 
       try {
         writer1.write(matched.toDouble / result.size.toDouble * 100 + " %")
         writer1.write(table)
-        writer.write(mkStringFromResults)
       } finally {
         writer1.close()
-        writer.close()
+        results.clear()
+        countOfResult = countOfResult + 1
       }
 
   }
+
+  override def receive: Receive = writeResults
 
   private def mkStringFromResults: String =
     results
@@ -123,7 +114,7 @@ class ResultsAggregator extends Actor {
              | "id": "$id",
              | "result": {
              |   "before": "${result.beforePrediction.`type`}",
-             |   "result": "${result.prediction.fold("")(_.label)}",
+             |   "result": "${result.prediction.fold("")(_.`type`.toString)}",
              |   "percent": "${result.prediction.fold("")(_.percent.toString)}"
              | }
              |}
@@ -132,10 +123,4 @@ class ResultsAggregator extends Actor {
       }
       .mkString("{ \n  \"data\": [", ",\n", "\n]}")
 
-  override def preStart(): Unit = {
-    super.preStart()
-
-    context.system.scheduler.schedule(2 minutes, 30 seconds, self, PrintResults)(context.dispatcher)
-    ()
-  }
 }

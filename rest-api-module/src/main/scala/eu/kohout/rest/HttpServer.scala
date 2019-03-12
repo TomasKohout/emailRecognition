@@ -1,4 +1,5 @@
 package eu.kohout.rest
+
 import akka.Done
 import akka.actor.ActorSystem
 import akka.http.scaladsl.Http
@@ -9,8 +10,8 @@ import akka.http.scaladsl.server.Directives._
 import akka.stream.Materializer
 import com.typesafe.config.Config
 import de.heikoseeberger.akkahttpcirce.FailFastCirceSupport
+import eu.kohout.rest.HttpMessages.{EmailRecognitionRequest, TrainRequest}
 import eu.kohout.rest.HttpServer.Configuration
-import eu.kohout.types.HttpMessages.{EmailRecognitionRequest, TrainRequest}
 import io.circe.Json
 import io.circe.generic.auto._
 import io.circe.syntax._

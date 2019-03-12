@@ -1,0 +1,770 @@
+#%RAML 1.0 Library
+#
+# This is a java-specific RAML library containing
+# platform bits and other reusable parts.
+#
+
+
+annotationTypes:
+  patchable:
+    description: |
+      Technical annotation. Add at type level to mark the type as usable for the patch operation.
+      This adds a hint for the generator to add an extra technical attribute (nullValues).
+    type: nil
+
+traits:
+
+  CommonResponse:
+    usage: Apply this to any method that has common response errors 400, 500, 502.
+    description: Common error responses 400, 500, 502.
+    responses:
+      400:
+        description: |
+          Integration error.
+          Invalid value(s) provided as API function input queryParameters.
+        body:
+          application/json:
+            type: ErrorHolder
+
+      500:
+        description: |
+          Internal error.
+          Invalid implementation in our module.
+        body:
+          application/json:
+            type: ErrorHolder
+
+
+  Default:
+    responses:
+      502:
+        description: |
+          Infrastructural error.
+          Problem with infrastructure (DB unavailable or with write/read errors,
+          received error from another system).
+        body:
+          application/json:
+            type: ErrorHolder
+      500:
+        description: Server error.
+        body:
+          application/json:
+            type: ErrorHolder
+
+      400:
+        description: API entry validation error.
+        body:
+          application/json:
+            type: ErrorHolder
+            properties:
+              errors: (ApiParsingError | FormError)[]
+
+  BusinessValidation:
+    is:
+      - Default
+    responses:
+      406:
+        description: Business error.
+        body:
+          application/json:
+            type: ErrorHolder
+            properties:
+              errors: (<<errorTypes>>)[]
+
+  NotFound:
+    is:
+      - Default
+    responses:
+      410:
+        description: Entity was not found.
+
+  NotFoundWithErrors:
+    is:
+      - Default
+    responses:
+      410:
+        body:
+          application/json:
+            type: ErrorHolder
+            properties:
+              errors: (<<errorTypes>>)[]
+
+  ConcurrentModification:
+    is:
+      - Default
+    responses:
+      409:
+        body: <<responseObject>>
+        description: Entity was changed by another user since it was last obtained.
+
+  Delete:
+    is:
+      - NotFound
+    responses:
+      204:
+        description: Entity was deleted.
+
+  Create:
+    is:
+      - Default
+    body:
+      application/json:
+        type: <<requestObject>>
+    responses:
+      201:
+        body: <<responseObject>>
+        description: Entity was created.
+
+  # Not covered by ADR, meant for basic custom lightweight update-like processing
+  Change:
+    is:
+      - NotFound
+    body:
+      application/json:
+        type: <<requestObject>>
+    responses:
+      200:
+        description: Entity was updated.
+
+  Update:
+    is:
+      - NotFound
+      - ConcurrentModification:
+          responseObject: <<responseObject>>
+    body:
+      application/json:
+        # requestObject must inherit from UpdateStampParent
+        type: <<requestObject>>
+    responses:
+      200:
+        body: <<responseObject>>
+        description: Entity was updated.
+
+  Patch:
+    is:
+      - NotFound
+    body:
+      application/json:
+        type: <<requestObject>>
+    responses:
+      200:
+        body: <<responseObject>>
+        description: Entity was updated.
+
+  GetDetail:
+    description: Get detail of a single item.
+    is:
+      - NotFound
+    responses:
+      200:
+        body:
+          application/json:
+            # Object with the required entity
+            type: <<responseObject>>
+
+  Search:
+    description: Search items based on the given filter, get their ids.
+    is:
+      - Default
+    body:
+      application/json:
+        # Child of ListSearchRequestBase
+        type: <<requestObject>>
+    responses:
+      200:
+        body:
+          application/json:
+            type: SearchResponse
+
+  BatchGet:
+    description: Get items by id list.
+    is:
+      - Default
+    body:
+      application/json:
+        type: BatchGetRequest
+    responses:
+      200:
+        body:
+          application/json:
+            # Child of ListResponse
+            type: <<responseObject>>
+
+  List:
+    description: Get items based on the given filter.
+    is:
+      - Default
+    body:
+      application/json:
+        type: <<requestObject>> # Child of ListSearchRequestBase
+    responses:
+      200:
+        body:
+          application/json:
+            # Child of ListResponse
+            type: <<responseObject>>
+
+  ListNoFilter:
+    description: List all the data without any filtering.
+    is:
+      - Default
+    responses:
+      200:
+        body:
+          application/json:
+            # Child of ListResponse
+            type: <<responseObject>>
+
+  Param:
+    is:
+      - Default
+    body:
+      application/json:
+        # Child of ParamBase
+        type: <<requestObject>>
+    responses:
+      200:
+
+
+types:
+
+  UpdateStampParent:
+    type: object
+    properties:
+      updateStamp:
+        type: number
+        description: Update stamp to detect concurrent modification.
+###############################################################################
+# Common error type definitions                                               #
+###############################################################################
+
+  ErrorHolder:
+    type: object
+    description: Wrapper object to hold array of errors.
+    properties:
+      errors:
+        type: any
+        required: false
+        description: List of errors. Empty in case of unexpected or infrastructure errors.
+      idCall:
+        type: string
+        description: Optional call identifier for easier troubleshooting (will be present only for unexpected errors).
+        required: false
+      resource:
+        type: string
+        description: The first known source of the error.
+        required: false
+
+  CommonError:
+    type: object
+    description: The base class for errors. All error types should inherit from this type (or one of its subtypes).
+    discriminator: code
+    properties:
+      code: string
+      message:
+        type: string
+        description: Optional description of the error. If present, this is NOT a localized message to be displayed to users, but more of a technical description of the problem.
+        required: false
+      attributeName:
+        type: string
+        required: false
+        description: Optional attribute to which the error relates.
+      data:
+        type: any
+        required: false
+
+  ApiParsingError:
+    type: CommonError
+    description: Error holds generic parsing issues within its message. These errors happened before actual validation.
+    discriminatorValue: API.Parsing.Failed
+
+  #ExtendedValidationErrors
+  ExtendedAttrParsingError:
+    type: CommonError
+    description: Attribute value conversion failed.
+    discriminatorValue: ExtendedAttribute.ParsingError
+
+  ExtendedAttrUnknownAttrError:
+    type: CommonError
+    description: Attribute was not found.
+    discriminatorValue: ExtendedAttribute.UnknownAttribute
+
+  InvalidStatusError:
+    type: CommonError
+    description: Current entity status does not allow the required operation.
+    discriminatorValue: Invalid.Status
+
+  InvalidIntervalRangeError:
+    type: CommonError
+    description: Range of the interval is invalid. The lower bound must be less than the upper bound (from < upTo).
+    discriminatorValue: Invalid.IntervalRange
+
+  FormError:
+    type: CommonError
+    description: Base type for built-in java platform validation errors. Only types in the platform should inherit from this type.
+
+  FormErrorFileUploadTooBig:
+    type: FormError
+    description: Uploaded file is too big.
+    discriminatorValue: FileUpload.TooBig
+    properties:
+      data:
+        type: object
+        properties:
+          maxUploadSize: number
+
+  #AtLeastOneNotEmptyStringValidator
+  FormErrorAtLeastOneFieldRequired:
+    type: FormError
+    description: At least one of fields must be filled.
+    discriminatorValue: Object.atLeastOneFieldRequired
+
+  #CodeListValidator
+  FormErrorCodeListItemInvalid:
+    type: FormError
+    description: Value not found in code list.
+    discriminatorValue: CodeList.Invalid
+
+  #DateValidator
+  FormErrorDateTooLow:
+    type: FormError
+    description: Date attribute is too low.
+    discriminatorValue: Date.TooLow
+    properties:
+      data:
+        type: object
+        properties:
+          minDateTime:
+            type: datetime
+            required: false
+            description: Minimal accepted value (in case the validated date includes time).
+          minDate:
+            type: date-only
+            required: false
+            description: Minimal accepted value (in case the validated date is local date).
+
+  FormErrorDateTooHigh:
+    type: FormError
+    description: Date attribute is too high.
+    discriminatorValue: Date.TooHigh
+    properties:
+      data:
+        type: object
+        properties:
+          maxDateTime:
+            type: datetime
+            required: false
+            description: Greatest accepted value (in case the validated date includes time).
+          maxDate:
+            type: date-only
+            required: false
+            description: Greatest accepted value (in case the validated date is local date).
+
+  FormErrorDateInPast:
+    type: FormError
+    discriminatorValue: Date.InPast
+    description: Past date not allowed.
+
+  FormErrorDateInFuture:
+    type: FormError
+    discriminatorValue: Date.InFuture
+    description: Future date not allowed.
+
+  #EmailValidator
+  FormErrorEmailInvalid:
+    type: FormError
+    description: Invalid e-mail address.
+    discriminatorValue: Email.Invalid
+
+  #EnumerationValidator
+  FormErrorEnumerationInvalid:
+    type: FormError
+    description: Invalid enumeration value.
+    discriminatorValue: Enumeration.Invalid
+    properties:
+      data:
+        type: object
+        properties:
+          enumeration: string[]
+
+  #IsEmptyValidator
+  FormErrorObjectNotEmpty:
+    type: FormError
+    description: Value must not be empty.
+    discriminatorValue: Object.NotEmpty
+
+  #MoneyValidator
+  FormErrorMoneyTooManyDecimalPlaces:
+    type: FormError
+    description: Amount has too many decimal places.
+    discriminatorValue: Money.TooManyDecimalPlaces
+
+  FormErrorMoneyCurrencyUnsupported:
+      type: FormError
+      discriminatorValue: Money.Currency.Unsupported
+
+  #NotEmptyValidator
+  FormErrorObjectEmpty:
+    type: FormError
+    description: Object must not be empty.
+    discriminatorValue: Object.Empty
+
+  #NumberValidator
+  FormErrorNumberTooHigh:
+    type: FormError
+    description: Number is too big.
+    discriminatorValue: Number.TooHigh
+    properties:
+      data:
+        type: object
+        properties:
+          maxVal:
+            description: The biggest allowed value.
+            type: number
+
+  FormErrorNumberTooLow:
+    type: FormError
+    description: Number is too small.
+    discriminatorValue: Number.TooLow
+    properties:
+      data:
+        type: object
+        properties:
+          minVal:
+            description: The minimal allowed value.
+            type: number
+
+  FormErrorNumberOutOfRange:
+    type: FormError
+    discriminatorValue: Number.OutOfRange
+    properties:
+      data:
+        type: object
+        properties:
+          minVal: number
+          maxVal: number
+
+  #PhoneValidator
+  FormErrorPhoneInvalid:
+    type: FormError
+    discriminatorValue: Phone.Invalid
+
+  FormErrorStringTooLong:
+    type: FormError
+    discriminatorValue: String.TooLong
+    properties:
+      data:
+        type: object
+        properties:
+          maxLength: integer
+
+  FormErrorStringTooShort:
+    type: FormError
+    discriminatorValue: String.TooShort
+    properties:
+      data:
+        type: object
+        properties:
+          minLength: integer
+
+  FormErrorStringInvalidFormat:
+    type: FormError
+    discriminatorValue: String.InvalidFormat
+
+  # CollectionSizeValidator
+  FormErrorCollectionTooSmall:
+    type: FormError
+    discriminatorValue: Collection.TooSmall
+    properties:
+      data:
+        type: object
+        properties:
+          minItems: integer
+
+  FormErrorCollectionTooLarge:
+    type: FormError
+    discriminatorValue: Collection.TooLarge
+    properties:
+      data:
+        type: object
+        properties:
+          maxItems: integer
+
+  # Parametrization validation errors
+  ErrorParamHistoryUpdate:
+    type: CommonError
+    discriminatorValue: Param.HistoryUpdate
+    description: Param entity history records can't be changed.
+
+  ErrorParamWrongValidFrom:
+    type: CommonError
+    discriminatorValue: Param.WrongValidFrom
+    description: Param entity with validFrom in the past or now is not allowed.
+
+  ErrorParamSource:
+    type: CommonError
+    discriminatorValue: Param.WrongSource
+    description: Param entity must belong to another source.
+
+  ErrorParamEmptyValidFrom:
+    type: CommonError
+    discriminatorValue: Param.EmptyValidFrom
+    description: Param entity validFrom can't be null if versions quantity more than one.
+
+  ErrorParamDuplicatedValidFrom:
+    type: CommonError
+    discriminatorValue: Param.DuplicatedValidFrom
+    description: Param entity validFrom can't be duplicated for one entity.
+
+  ErrorParamKeyInvalidFormat:
+    type: CommonError
+    discriminatorValue: Param.KeyInvalidFormat
+    description: Param entity key has invalid format.
+
+  ErrorParamKeyEmpty:
+    type: CommonError
+    discriminatorValue: Param.KeyEmpty
+    description: Param entity key can't be empty.
+
+  ParamBase:
+    type: object
+    properties:
+      data:
+        type: any
+        required: false
+
+###############################################################################
+# List/Search Operations                                                      #
+###############################################################################
+
+  # Common parent type for list requests.
+  ListSearchRequestBase:
+    type: object
+    properties:
+      # Subtypes must override this with their custom criteria type.
+      filter:
+        type: any
+        description: Filter criteria.
+        required: false
+      params:
+        type: any
+        required: false
+      # Array of SortDefinition children
+      sort:
+        type: any
+        description: Custom sorting definition.
+        required: false
+
+  # Common parent type for list/search responses.
+  # By default, list and search operations should support Limited resultset pattern.
+  ListSearchResponseBase:
+    type: object
+    properties:
+      params:
+        type: ResultSetLimitResponse
+        required: false
+
+  ListResponse:
+    type: ListSearchResponseBase
+    properties:
+      # This must be overridden as an array containing list of entities found.
+      data:
+        type: any
+
+  SearchResponse:
+    type: ListSearchResponseBase
+    properties:
+      id:
+        type: string[]
+
+  # Common parent type for list/search responses WITHOUT Limited resultset pattern.
+  # The variant above is preferred.
+  # Use only if you make sure that the number of returned items is limited, e.g. check the result set size yourself and throw an exception if there are too many records.
+  ListSearchResponseBaseWithoutLimit:
+    type: object
+    properties:
+      params:
+        type: any
+        required: false
+
+  ListResponseWithoutLimit:
+    type: ListSearchResponseBaseWithoutLimit
+    properties:
+      # This must be overridden as an array containing list of entities found.
+      data:
+        type: any
+
+  SearchResponseWithoutLimit:
+    type: ListSearchResponseBaseWithoutLimit
+    properties:
+      id:
+        type: string[]
+
+  # Common wrapper for batch get requests.
+  # By default, search operation supports only 1000 records, so batchGet should support the same number
+  BatchGetRequest:
+    type: BatchGetRequestCustomLimit
+    properties:
+      id:
+        type: string[]
+        maxItems: 1000
+
+  # Use instead of BatchGetRequest to specify custom limit, always set maxItems!
+  BatchGetRequestCustomLimit:
+    type: object
+    properties:
+      id:
+        type: string[]
+        description: array of IDs to be returned.
+        minItems: 1
+
+###############################################################################
+# Sorting                                                                     #
+###############################################################################
+
+  SortOrder:
+    type: string
+    description: Sorting order.
+    enum: [ASC, DESC]
+
+  SortDefinition:
+    type: object
+    description: Base type for sorting definition.
+    properties:
+      code:
+        type: any
+        description: Sorting attribute, subtypes must override this with appropriate enum containing acceptable attributes.
+      order:
+        type: SortOrder
+        description: Sorting order.
+
+###############################################################################
+# Limited ResultSet Pattern                                                   #
+###############################################################################
+
+  LimitingListRequest:
+    type: ListSearchRequestBase
+    description: Common parent type for list requests implementing the Limited resultset pattern.
+    properties:
+      params: ResultSetLimit
+
+  ResultSetLimit:
+    type: object
+    description: Support type for the limited resultset pattern.
+    properties:
+      maxItems:
+        type: integer
+        required: false
+        description: Contains positive integer number. When the number is higher then server hardcoded limit then the `maxItems` value is ignored and server value is used.
+
+  # Support response type for the limited resultset pattern.
+  ResultSetLimitResponse:
+    type: object
+    properties:
+      maxItemsApplied:
+        type: boolean
+        required: false
+        default: false
+        description: |
+          When set to true, too many items were found, so only a (nondeterministic) subset of them was returned.
+          This usually means that more filtering conditions should be given in order to narrow the filter.
+
+###############################################################################
+# Common useful domain objects                                                #
+###############################################################################
+  Money:
+    type: object
+    description: Common representation of currency amount.
+    properties:
+      amount: number
+      currencyCode: string
+
+  DatetimeInterval:
+    type: object
+    description: Interval of two datetime values. Include the lower bound (from) and exclude the upper bound (upTo).
+    properties:
+      from:
+        type: datetime
+        required: false
+        description: Null value is equal to negative infinity - no restrictions from lower bound.
+      upTo:
+        type: datetime
+        required: false
+        description: Null value is equal to positive infinity - no restrictions from upper bound.
+
+  DateInterval:
+    type: object
+    description: Interval of two date values. Include the lower bound (from) and exclude the upper bound (upTo).
+    properties:
+      from:
+        type: date-only
+        required: false
+        description: Null value is equal to negative infinity - no restrictions from lower bound.
+      upTo:
+        type: date-only
+        required: false
+        description: Null value is equal to positive infinity - no restrictions from upper bound.
+
+  DmsFile:
+    type: object
+    description: Common representation of a DMS file for download.
+    properties:
+      idFile: string
+      idDocument: string
+      downloadToken: string
+
+  ExtendedAttribute:
+    type: object
+    description: Common representation of extended attribute.
+    properties:
+      name: string
+      value:
+        type: string
+        required: false
+        description: Value is passed in and out as string, but actual type depends on how the extended attribute is defined. At the moment, number, text and date are supported.
+
+  PatchRequest:
+    type: object
+    description: |
+      Common wrapper for patch requests
+    properties:
+      changes:
+        type: any
+        description: |
+          The object `changes` is a subset of updated entity definition.
+          Every subtype must override this object.
+
+  CodeListItem:
+    type: object
+    description: Common code list item metadata object
+    properties:
+      validFrom:
+        type: datetime
+        required: false
+        description: |
+          An instant when code list item becomes valid and can be used by system.
+      validTo:
+        type: datetime
+        required: false
+        description: |
+          An instant when code list item becomes invalid and can not be used by
+          system anymore.
+
+  DisplayName:
+    type: object
+    description: Localized name (key/value pair of language/name).
+    properties:
+      languageCode:
+        type: string
+        maxLength: 1024
+        description: ISO 639-1 language code of localized display name.
+      displayName:
+        type: string
+        maxLength: 1024
+        description: Localized name.
+
+  DisplayNames:
+    type: DisplayName[]
+    description: |
+      Array of localized names (key/value pairs of language/name) inteded to be
+      shown in front end applications.
