@@ -1,12 +1,9 @@
 package eu.kohout
 
+import akka.Done
 import akka.actor.{Actor, ActorContext, ActorRef, ActorSystem, PoisonPill, Props, Stash}
-import akka.cluster.singleton.{
-  ClusterSingletonManager,
-  ClusterSingletonManagerSettings,
-  ClusterSingletonProxy,
-  ClusterSingletonProxySettings
-}
+import akka.cluster.sharding.ShardRegion.{ExtractEntityId, ExtractShardId}
+import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings}
 import com.typesafe.config.{Config, ConfigFactory}
 import com.typesafe.scalalogging.Logger
 import eu.kohout.aggregator.ResultsAggregator
@@ -14,69 +11,29 @@ import eu.kohout.cleandata.CleanDataManager
 import eu.kohout.dictionary.DictionaryResolver
 import eu.kohout.loaddata.{LoadDataManager, LoadDataManagerLogic}
 import eu.kohout.model.manager.{ModelManager, ModelMessages}
+import eu.kohout.rest.HttpMessages
+import eu.kohout.rest.{HttpServer, HttpServerHandler}
 import smile.feature.Bag
+
+import scala.concurrent.duration._
 
 object RootActor {
   val name = "RootActor"
 
-  def clusterSingleton(
+  def startSharding(
+    system: ActorSystem,
     props: Props,
+    idExtractor: ExtractEntityId,
+    shardResolver: ExtractShardId,
     name: String
-  )(
-    implicit actorContext: ActorContext
-  ): ActorRef = {
-
-    val singleton = actorContext
-      .actorOf(
-        ClusterSingletonManager
-          .props(
-            singletonProps = props,
-            terminationMessage = PoisonPill,
-            settings = ClusterSingletonManagerSettings(actorContext.system)
-          ),
-        name = name
-      )
-
-    actorContext.actorOf(
-      ClusterSingletonProxy
-        .props(
-          singletonManagerPath = singleton.path.toStringWithoutAddress,
-          settings = ClusterSingletonProxySettings(actorContext.system)
-        ),
-      name = name + "Proxy"
+  ): ActorRef =
+    ClusterSharding(system).start(
+      typeName = name,
+      entityProps = props,
+      settings = ClusterShardingSettings(system),
+      extractEntityId = idExtractor,
+      extractShardId = shardResolver
     )
-
-  }
-
-  def clusterSingleton(
-    props: Props,
-    name: String,
-    dispatcher: String
-  )(
-    implicit actorContext: ActorContext
-  ): ActorRef = {
-    val singleton = actorContext
-      .actorOf(
-        ClusterSingletonManager
-          .props(
-            singletonProps = props.withDispatcher(dispatcher),
-            terminationMessage = PoisonPill,
-            settings = ClusterSingletonManagerSettings(actorContext.system)
-          )
-          .withDispatcher(dispatcher),
-        name = name
-      )
-
-    actorContext.actorOf(
-      ClusterSingletonProxy
-        .props(
-          singletonManagerPath = singleton.path.toStringWithoutAddress,
-          settings = ClusterSingletonProxySettings(actorContext.system)
-        )
-        .withDispatcher(dispatcher),
-      name = name + "Proxy"
-    )
-  }
 
   object Configuration {
     val configPath = "root-actor"
@@ -87,6 +44,7 @@ object RootActor {
 
   case object StartCrossValidation extends RootActorMessage
   case object StartApplication extends RootActorMessage
+  case object TrainModel extends RootActorMessage
 
   sealed trait RootActorMessage
 
@@ -98,18 +56,22 @@ class RootActor extends Actor with Stash {
   implicit private val config: Config = ConfigFactory.load()
   private val rootActorConfig = config.getConfig(Configuration.configPath)
   private val resultsDir = rootActorConfig.getString(Configuration.resultsDir)
-  implicit private val actorContext: ActorContext = context
+
 
   private val log = Logger(getClass)
 
-  private val resultsAggregator = clusterSingleton(
-    ResultsAggregator.props,
+  private val resultsAggregator = startSharding(
+    system = context.system,
+    props = ResultsAggregator.props,
+    idExtractor = ResultsAggregator.idExtractor,
+    shardResolver = ResultsAggregator.shardResolver,
     name = ResultsAggregator.name
   )
 
   private val modelManager =
-    clusterSingleton(
-      ModelManager
+    startSharding(
+      system = context.system,
+      props = ModelManager
         .props(
           config
             .getConfig(
@@ -117,42 +79,55 @@ class RootActor extends Actor with Stash {
             ),
           self,
           resultsAggregator
-        ),
-      ModelManager.name,
-      "model-dispatcher"
+        ).withDispatcher("model-dispatcher"),
+      shardResolver = ModelManager.shardResolver,
+      idExtractor = ModelManager.idExtractor,
+      name = ModelManager.name
     )
 
-  private val cleanDataManager = clusterSingleton(
-    CleanDataManager
+  private val cleanDataManager = startSharding(
+    system = context.system,
+    props = CleanDataManager
       .props(
         config = config
           .getConfig(
             CleanDataManager.Configuration.configPath
           ),
         modelManager = modelManager
-      ),
-    name = CleanDataManager.name,
-    dispatcher = "clean-dispatcher"
+      ).withDispatcher("clean-dispatcher"),
+    shardResolver = CleanDataManager.shardResolver,
+    idExtractor = CleanDataManager.idExtractor,
+    name = CleanDataManager.name
   )
 
-  private val loadDataManager = clusterSingleton(
+  val httpServer = new HttpServer(config, new HttpServerHandler(cleanDataManager, self)(5 seconds))(context.system)
+
+  private val loadDataManager = startSharding(
+    system = context.system,
     LoadDataManager
       .props(
         config.getConfig(LoadDataManagerLogic.Configuration.configPath),
         cleanDataManager = cleanDataManager,
         resultsAggregator = resultsAggregator
-      ),
-    LoadDataManager.name,
-    "load-dispatcher"
+      ).withDispatcher("load-dispatcher"),
+    shardResolver = LoadDataManager.shardResolver,
+    idExtractor = LoadDataManager.idExtractor,
+    name = LoadDataManager.name
+
+
   )
 
-  private val dictionaryResolver = clusterSingleton(
+  private val dictionaryResolver = startSharding(
+    system = context.system,
     DictionaryResolver.props(
       config = config.getConfig(DictionaryResolver.Configuration.configPath),
       loadDataManager = loadDataManager,
       rootActor = self
     ),
+    shardResolver = DictionaryResolver.shardResolver,
+    idExtractor = DictionaryResolver.idExtractor,
     name = DictionaryResolver.name
+
   )
 
   override def receive: Receive = startApplication
@@ -166,7 +141,7 @@ class RootActor extends Actor with Stash {
 
     case msg: DictionaryResolver.DictionaryResolved =>
       log.info("Dictionary resolved")
-      context.become(crossValidation)
+      context.become(started)
 
       bag = Some(msg.bag)
       bayesSize = Some(msg.bayesSize)
@@ -174,7 +149,7 @@ class RootActor extends Actor with Stash {
       cleanDataManager ! CleanDataManager.ShareBag(msg.bag)
       modelManager ! ModelMessages.FeatureSizeForBayes(msg.bayesSize)
       loadDataManager ! LoadDataManager.DictionaryExists
-      self ! RootActor.StartCrossValidation
+//      self ! RootActor.StartCrossValidation
 
       unstashAll()
 
@@ -183,8 +158,22 @@ class RootActor extends Actor with Stash {
 
   }
 
-  private def crossValidation: Receive = {
-    case StartCrossValidation =>
+  private def started: Receive = {
+    case HttpMessages.RootActor.KillActors =>
+      resultsAggregator ! PoisonPill
+      dictionaryResolver ! PoisonPill
+      loadDataManager ! PoisonPill
+      cleanDataManager ! PoisonPill
+      modelManager ! PoisonPill
+
+    case HttpMessages.RootActor.StartActors =>
+      resultsAggregator ! Done
+      dictionaryResolver ! Done
+      loadDataManager ! Done
+      cleanDataManager ! Done
+      modelManager ! Done
+
+    case HttpMessages.RootActor.StartCrossValidation =>
       log.info("Starting cross validation")
       loadDataManager ! LoadDataManager.StartCrossValidation
 
@@ -195,6 +184,11 @@ class RootActor extends Actor with Stash {
 
     case ModelMessages.Trained =>
       loadDataManager ! LoadDataManager.ContinueCrossValidation
+
+    case HttpMessages.RootActor.TrainModel =>
+      log.info("Beginning the process of training model")
+      modelManager ! ModelMessages.WriteModels
+      loadDataManager ! LoadDataManager.LoadTrainData
     case _ =>
       ()
   }

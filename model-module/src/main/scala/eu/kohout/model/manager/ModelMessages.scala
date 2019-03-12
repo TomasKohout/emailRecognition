@@ -46,7 +46,7 @@ object ModelMessages {
 
   case class FeatureSizeForBayes(size: Int) extends ModelMessages
 
-  case class Predict(data: CleansedEmail) extends ModelMessages
+  case class Predict(data: CleansedEmail, replyTo: Option[ActorRef] = None) extends ModelMessages
 
   case object Trained extends ModelMessages
 

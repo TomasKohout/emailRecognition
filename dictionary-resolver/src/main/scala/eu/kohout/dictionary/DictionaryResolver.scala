@@ -3,6 +3,7 @@ package eu.kohout.dictionary
 import java.io.{File, FileWriter}
 
 import akka.actor.{Actor, ActorRef, Props}
+import akka.cluster.sharding.ShardRegion
 import akka.pattern.ask
 import akka.util.Timeout
 import com.typesafe.config.Config
@@ -27,6 +28,13 @@ object DictionaryResolver {
     val timeOut = "timeout"
     val saveTo = "save-to"
   }
+
+  val idExtractor: ShardRegion.ExtractEntityId = {
+    case msg => (name, msg)
+  }
+
+  val shardResolver: ShardRegion.ExtractShardId =
+    _ => (math.abs(name.hashCode) % 100).toString
 
   def props(
     config: Config,

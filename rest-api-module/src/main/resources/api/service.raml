@@ -1,0 +1,20 @@
+#%RAML 1.0
+title: "Email recognition service"
+description: "Email recognition service"
+version: "1.0"
+protocols:
+- "HTTP"
+mediaType: application/json
+
+/application:
+  /!crossValidation:
+    get:
+      responses:
+        200:
+          description: Application started to execute cross validation
+
+  /!trainModels:
+    get:
+      responses:
+        200:
+          description: Application started to train models.

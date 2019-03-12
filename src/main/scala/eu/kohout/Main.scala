@@ -1,6 +1,7 @@
 package eu.kohout
 import akka.actor.{ActorRef, ActorSystem, PoisonPill}
 import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
+import eu.kohout.rest.HttpServer
 
 object Main{
   val actorSystem = ActorSystem("application")

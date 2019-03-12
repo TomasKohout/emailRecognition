@@ -3,11 +3,11 @@ package eu.kohout.loaddata
 import java.io.File
 
 import akka.actor.{Actor, ActorRef, Cancellable, Props}
+import akka.cluster.sharding.ShardRegion
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
 import eu.kohout.cleandata.CleanDataManager.{CleanDataForDictionary, TrainData}
-import eu.kohout.loaddata.LoadDataWorker.LoadTestData
-import eu.kohout.parser.Email
+import eu.kohout.parser.{Email, EmailType}
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
@@ -15,6 +15,13 @@ import scala.concurrent.duration._
 object LoadDataManager {
 
   val name = "LoadData"
+
+  val idExtractor: ShardRegion.ExtractEntityId = {
+    case msg => (name, msg)
+  }
+
+  val shardResolver: ShardRegion.ExtractShardId =
+    _ => (math.abs(name.hashCode) % 100).toString
 
   def props(
     config: Config,
@@ -24,6 +31,7 @@ object LoadDataManager {
 
   private type LoadDataWorkers = ActorRef
 
+  case object LoadTrainData extends LoadDataManagerMessages
   case object CreateDictionaryFromData extends LoadDataManagerMessages
   case object LoadData extends LoadDataManagerMessages
   case object DictionaryExists extends LoadDataManagerMessages
@@ -60,7 +68,47 @@ class LoadDataManager(
 
   private var dictionaryResolver: LoadDataWorkers = _
 
-  private def dictionaryExists: Receive = {
+  private def loadTrainData: Receive = {
+    case LoadTrainData =>
+      val grouped = emailTypes
+        .groupBy(_._2)
+
+      val ham = grouped.getOrElse(EmailType.Ham, Seq.empty).map(_._1)
+      val spam = grouped.getOrElse(EmailType.Spam, Seq.empty).map(_._1)
+      log.debug("Train size of ham {} and spam {}", ham.size, spam.size)
+      val trainData =
+        if (ham.size > spam.size)
+          ham.take(takeAmountForTraining(ham.size)).toSet ++ spam.take(
+            takeAmountForTraining((spam.size * ham.size.doubleValue / spam.size).toInt)
+          )
+        else
+          ham.take(takeAmountForTraining((ham.size * spam.size.doubleValue / ham.size).toInt)).toSet ++ spam
+            .take(
+              takeAmountForTraining(spam.size)
+            )
+
+      val data = allFiles.filter(file => trainData.contains(file.getName))
+      howManyEmailsToLoad = data.length
+      log.info("Train data size is {}", data.length)
+      soFarLoadedData = Seq.empty
+      sendLoadedFiles(data, sendNext = false)
+
+    case decreaseForError: DecreaseForError =>
+      log.error("Error occured: {}", decreaseForError.exception.map(_.getMessage))
+      acceptLoadMessage()
+
+    case loadedData: LoadedData =>
+      soFarLoadedData = loadedData.email +: soFarLoadedData
+      acceptLoadMessage()
+
+    case other =>
+      log.info("blaaaaaaaa {}", other)
+  }
+  private def waitingForOrders: Receive = {
+    case LoadTrainData =>
+      log.info("Switching to loading train data")
+      context.become(loadTrainData)
+      self ! LoadTrainData
     case StartCrossValidation =>
       log.info("Starting cross validation")
       context.become(crossValidation)
@@ -68,88 +116,7 @@ class LoadDataManager(
 
     case _ =>
       ()
-//    case decreaseForError: DecreaseForError =>
-//      log.error("Error occured: ", decreaseForError.exception.getMessage)
-//      decreaseForError.exception.printStackTrace()
-//
-//      howManyEmailsToLoad = howManyEmailsToLoad - 1
-//      log.debug("sizeOfTrainData {}", howManyEmailsToLoad)
-//      if (howManyEmailsToLoad == 0) {
-//        cleanDataManager ! TrainData(soFarLoadedData)
-//        context.system.scheduler.scheduleOnce(3 minutes, self, LoadTestData)
-//        soFarLoadedData = Seq.empty
-//      }
-//      ()
-//
-//    case loadedData: LoadedData =>
-//      soFarLoadedData = loadedData.email +: soFarLoadedData
-//      howManyEmailsToLoad = howManyEmailsToLoad - 1
-//
-//      log.debug("sizeOfTrainData {}", howManyEmailsToLoad)
-//      if (howManyEmailsToLoad == 0) {
-//        cleanDataManager ! TrainData(soFarLoadedData)
-//        context.system.scheduler.scheduleOnce(4 minutes, self, LoadTestData)
-//        soFarLoadedData = Seq.empty
-//      }
-//
-//      ()
-//
-//    case LoadData =>
-//      log.debug("Loading data from path: {}", emailsDir.getAbsolutePath)
-//
-//      val files = splitedFiles match {
-//        case Nil =>
-//          log.info("Cross validation has been completely done.")
-//          Array.empty
-//        case x :: Nil =>
-//          splitedFiles = Nil
-//          x
-//        case x :: xs =>
-//          splitedFiles = xs
-//          x
-//      }
-//
-//      val groupedByType = files
-//        .flatMap { file =>
-//          emailTypes
-//            .get(file.getName)
-//            .map((_, file))
-//        } //group by email Type
-//        .groupBy(_._1)
-//
-//      val hamMails = groupedByType.get(Ham)
-//      val spamMails = groupedByType.get(Spam)
-//
-//      //TODO this could be problem. Data sets does not have to be the same size
-//      val (spamTrain, spamTest) = spamMails.getOrElse(Array.empty).splitAt(takeAmountForTraining(files.length))
-//      val (hamTrain, hamTest) = hamMails.getOrElse(Array.empty).splitAt(takeAmountForTraining(files.length))
-//
-//      val trainData = spamTrain ++ hamTrain
-//
-//      testDataPaths = spamTest.map(_._2) ++ hamTest.map(_._2)
-//
-//      howManyEmailsToLoad = trainData.length
-//
-//      log.debug("Initial size of train data {}", howManyEmailsToLoad)
-//
-//      trainData
-//        .foreach {
-//          case (emailType, file) =>
-//            workers ! LoadDataWorker.LoadData(email = file, label = emailType)
-//        }
-//      ()
-//
-//    case LoadTestData =>
-//      testDataPaths
-//        .flatMap { file =>
-//          emailTypes.get(file.getName).map((_, file))
-//        }
-//        .foreach {
-//          case (emailType, file) =>
-//            workers ! LoadDataWorker.LoadData(email = file, label = emailType, sendNext = true)
-//        }
   }
-  //
 
   private def crossValidation: Receive = {
     case StartCrossValidation =>
@@ -166,23 +133,29 @@ class LoadDataManager(
           splitedFiles = xs
           x
       }
-      log.debug("files length {}", testFiles.length)
+      if (testFiles.nonEmpty) {
+        log.debug("files length {}", testFiles.length)
 
-      val trainFiles = allFiles.diff(testFiles)
+        val trainFiles = allFiles.diff(testFiles)
 
-      testDataPaths = testFiles
+        testDataPaths = testFiles
 
-      log.debug("after filtering, test length {}, train length {}", testFiles.length, trainFiles.length)
+        log.debug(
+          "after filtering, test length {}, train length {}",
+          testFiles.length,
+          trainFiles.length
+        )
 
-      howManyEmailsToLoad = trainFiles.length
+        howManyEmailsToLoad = trainFiles.length
 
-      log.debug("Initial size of train data {}", howManyEmailsToLoad)
+        log.debug("Initial size of train data {}", howManyEmailsToLoad)
 
-      sendLoadedFiles(trainFiles, sendNext = false)
-
+        sendLoadedFiles(trainFiles, sendNext = false)
+      } else {
+        context.become(waitingForOrders)
+      }
     case ContinueCrossValidation =>
       sendLoadedFiles(testDataPaths, sendNext = true)
-
 
       testDataPaths = Array.empty
     case decreaseForError: DecreaseForError =>
@@ -198,8 +171,12 @@ class LoadDataManager(
 
   }
 
-  def sendLoadedFiles(files: Array[File], sendNext: Boolean): Unit = {
-    files.flatMap(file => emailTypes.get(file.getName).map((_, file)))
+  def sendLoadedFiles(
+    files: Array[File],
+    sendNext: Boolean
+  ): Unit =
+    files
+      .flatMap(file => emailTypes.get(file.getName).map((_, file)))
       .foreach {
         case (label, file) =>
           workers ! LoadDataWorker.LoadData(
@@ -208,7 +185,6 @@ class LoadDataManager(
             sendNext = sendNext
           )
       }
-  }
 
   def acceptLoadMessage(): Unit = {
     howManyEmailsToLoad = howManyEmailsToLoad - 1
@@ -219,7 +195,7 @@ class LoadDataManager(
     }
     log.debug("sizeOfTrainData {}", howManyEmailsToLoad)
     if (howManyEmailsToLoad == 0) {
-      sendToCleaningAfter = sendToCleaningAfter.flatMap{c =>
+      sendToCleaningAfter = sendToCleaningAfter.flatMap { c =>
         c.cancel()
         None
       }
@@ -230,7 +206,7 @@ class LoadDataManager(
 
   private def creationOfDictionary: Receive = {
     case DictionaryExists =>
-      context.become(dictionaryExists)
+      context.become(waitingForOrders)
       self ! LoadData
 
     case CreateDictionaryFromData =>
@@ -253,7 +229,11 @@ class LoadDataManager(
       ()
 
     case decreaseForError: DecreaseForError =>
-      log.error("Error occured: {}, stack: {}", decreaseForError.exception.map(_.getMessage), decreaseForError.exception.map(_.getStackTrace))
+      log.error(
+        "Error occured: {}, stack: {}",
+        decreaseForError.exception.map(_.getMessage),
+        decreaseForError.exception.map(_.getStackTrace)
+      )
 
       howManyEmailsToLoad = howManyEmailsToLoad - 1
       log.debug("sizeOfTrainData {}", howManyEmailsToLoad)

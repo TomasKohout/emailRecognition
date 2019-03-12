@@ -3,8 +3,7 @@ package eu.kohout.aggregator
 import java.io.{File, PrintWriter}
 
 import akka.actor.{Actor, ActorRef, ActorSystem, Cancellable, PoisonPill, Props}
-import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
-import com.typesafe.config.Config
+import akka.cluster.sharding.ShardRegion
 import com.typesafe.scalalogging.Logger
 import eu.kohout.aggregator.ResultsAggregator._
 import eu.kohout.parser.EmailType
@@ -14,6 +13,13 @@ import scala.collection.mutable
 object ResultsAggregator {
 
   val name = "ResultsAggregator"
+
+  val idExtractor: ShardRegion.ExtractEntityId = {
+    case msg => (name, msg)
+  }
+
+  val shardResolver: ShardRegion.ExtractShardId =
+    _ => (math.abs(name.hashCode) % 100).toString
 
   def props: Props = Props(new ResultsAggregator)
 

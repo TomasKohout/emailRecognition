@@ -1,10 +1,9 @@
 #%RAML 1.0
-title: "Email recognition service"
-description: "Email recognition service"
+title: "Email recognition api"
+description: "Email recognition api"
 version: "1.0"
 protocols:
 - "HTTP"
-#baseUri: "https://thecontactsapi.restlet.net/v1"
 mediaType: application/json
 
 types:
@@ -15,33 +14,16 @@ types:
         type: string
         description: Whole email either with or withou mime format.
 
-  TrainData:
-    type: object
-    properties:
-      label: Label
-      message: string
-
   Models:
     type: string
     enum:
       - NaiveBayes
       - SVM
 
-  TrainRequest:
-    type: object
-    properties:
-      modelType:
-        description: |
-          If this field is missing then every model will be updated.
-        required: false
-        type: Models
-      data: TrainData[]
-
   EmailRecognitionResponse:
     type: object
     properties:
       label: Label
-      percent: integer
       models: Model[]
 
 
@@ -49,7 +31,7 @@ types:
     type: object
     properties:
       percent: integer
-      typeOfModel: string
+      typeOfModel: Models
 
   Label:
     type: string
@@ -63,14 +45,3 @@ types:
     responses:
       200:
        body: EmailRecognitionResponse
-
-
-/models:
-  /!train:
-    post:
-      body: TrainRequest
-      responses:
-        200:
-          description: Model trained
-        410:
-          description: typeOfModel does not exist

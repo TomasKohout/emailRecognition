@@ -54,23 +54,21 @@ class LoadDataWorker(
             .parseFromFile(loadData.email.getAbsolutePath, loadData.label),
           loadData.email.getAbsolutePath
         )
-      ).transform[LoadDataManagerMessages](
-          data => {
-            if (loadData.sendNext) {
-              resultsAggregator ! BeforePrediction(
-                data.email.id,
-                data.email.`type`
-              )
-              cleanDataManager ! CleanDataManager.TestData(data.email)
-            }
+      ).fold(
+        exception => DecreaseForError(Some(exception)),
+        data => {
+          if (loadData.sendNext) {
+            resultsAggregator ! BeforePrediction(
+              data.email.id,
+              data.email.`type`
+            )
+            cleanDataManager ! CleanDataManager.TestData(data.email)
+          }
+          data
+        }
+      )
 
-            Success(data)
-          },
-          exception => Success(DecreaseForError(Some(exception)))
-        )
-        .get
-
-      if(!loadData.sendNext) sender() ! result
+      if (!loadData.sendNext) sender() ! result
 
     case other =>
       log.debug("Unsuported message {}", other)

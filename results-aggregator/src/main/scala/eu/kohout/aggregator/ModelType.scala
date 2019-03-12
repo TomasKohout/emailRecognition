@@ -10,6 +10,8 @@ object ModelType {
     override def toString: String = "NaiveBayes"
   }
 
+  implicit def makeString: ModelType => String = _.toString
+
   def apply: String => ModelType = {
     case "SVM"        => SVM
     case "NaiveBayes" => NaiveBayes

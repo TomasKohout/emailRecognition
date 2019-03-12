@@ -84,7 +84,9 @@ lazy val `rest-api-module` = (project in file("rest-api-module"))
       circeCore,
       circeGeneric,
       circeParser,
-      akkaHttpCirce
+      akkaHttpCirce,
+      enumeratumCirce,
+      enumeratum
     )
   )
   .dependsOn(`model-module`, `clean-data-module`)

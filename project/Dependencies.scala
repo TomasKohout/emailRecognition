@@ -16,6 +16,7 @@ object Versions {
   val circe = "0.10.0"
   val jclOverSlf4j = "1.7.21"
   val commonsLoggingEmpty = "99-empty"
+  val enumeratum = "1.5.13"
 }
 
 object Dependencies {
@@ -38,5 +39,6 @@ object Dependencies {
   lazy val jclOverSlf4j = "org.slf4j" % "jcl-over-slf4j" % Versions.jclOverSlf4j
   lazy val commonsLoggingEmpty = "commons-logging" % "commons-logging" % Versions.commonsLoggingEmpty
   lazy val symspell = "org.lundez" % "symspell" % "1.0-SNAPSHOT" from "file:///Users/tomaskohout/Downloads/JavaSymSpell-master/build/libs/symspell-1.0-SNAPSHOT.jar"
-
+  lazy val enumeratumCirce = "com.beachape" %% "enumeratum-circe" % Versions.enumeratum
+  lazy val enumeratum = "com.beachape" %% "enumeratum" % Versions.enumeratum
 }

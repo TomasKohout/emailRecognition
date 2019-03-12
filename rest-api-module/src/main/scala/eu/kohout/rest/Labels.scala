@@ -1,15 +1,20 @@
 package eu.kohout.rest
+import enumeratum.{CirceEnum, Enum, EnumEntry}
 
-object Labels {
+sealed trait Labels extends EnumEntry
+
+object Labels extends Enum[ModelTypes] with CirceEnum[ModelTypes] {
+  val values = findValues
+
   case object Spam extends Labels
   case object Ham extends Labels
   case object NotObtained extends Labels
 
   implicit def fromString: String => Labels = {
-    case "ham"          => Ham
-    case "spam"         => Spam
-    case "not_obtained" => NotObtained
-    case other          => throw new IllegalStateException(s"$other is not a valid Label!")
+    case x if x.toLowerCase() == "ham"          => Ham
+    case x if x.toLowerCase() == "spam"         => Spam
+    case x if x.toLowerCase() == "not_obtained" => NotObtained
+    case other                                  => throw new IllegalStateException(s"$other is not a valid Label!")
   }
 
   implicit def makeString: Labels => String = {
@@ -18,5 +23,3 @@ object Labels {
     case NotObtained => "not_obtained"
   }
 }
-
-sealed trait Labels

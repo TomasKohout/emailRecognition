@@ -2,18 +2,14 @@ package eu.kohout.model.manager
 
 import akka.actor.{Actor, ActorRef, Cancellable, PoisonPill, Props}
 import akka.cluster.routing.{ClusterRouterPool, ClusterRouterPoolSettings}
-import akka.cluster.singleton.{
-  ClusterSingletonManager,
-  ClusterSingletonManagerSettings,
-  ClusterSingletonProxy,
-  ClusterSingletonProxySettings
-}
+import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
 import akka.pattern.ask
 import akka.routing._
 import akka.util.Timeout
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
 import ModelMessages._
+import akka.cluster.sharding.ShardRegion
 import eu.kohout.aggregator.{Model, ModelType, ResultsAggregator}
 import eu.kohout.aggregator.ResultsAggregator.AfterPrediction
 import eu.kohout.model.manager.ModelManager.Configuration
@@ -50,6 +46,13 @@ object ModelManager {
     }
 
   }
+
+  val idExtractor: ShardRegion.ExtractEntityId = {
+    case msg => (name, msg)
+  }
+
+  val shardResolver: ShardRegion.ExtractShardId =
+    _ => (math.abs(name.hashCode) % 100).toString
 
   private def apply(
     config: Config,
@@ -150,6 +153,7 @@ class ModelManager(
       percent = svmResult.result + naiveResult.result
       result = AfterPrediction(id = message.data.id, `type` = typeOfEmail, percent = percent, models = resultModels)
     } yield {
+      message.replyTo.foreach(_ ! result)
       resultsAggregator ! result
     }
   }
