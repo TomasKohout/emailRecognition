@@ -7,6 +7,9 @@ import eu.kohout.aggregator.ResultsAggregator.AfterPrediction
 import eu.kohout.cleandata.CleanDataManager
 import eu.kohout.parser.{EmailParser, EmailType}
 import eu.kohout.rest.HttpMessages.{EmailRecognitionRequest, EmailRecognitionResponse, Model, RootActor}
+import java.util.Base64
+
+import com.typesafe.scalalogging.Logger
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.Try
@@ -16,22 +19,29 @@ class HttpServerHandler(
   rootActor: ActorRef
 )(
   implicit timeout: Timeout) {
+  val log = Logger(getClass)
 
   def recognizeEmail(email: EmailRecognitionRequest)(implicit ec: ExecutionContext): Future[EmailRecognitionResponse] =
     try {
-      Try(CleanDataManager.CleanData(EmailParser.parseFromString(email.text, EmailType.NotObtained)))
-        .fold(
-          ex => Future.failed(ex),
-          cleanDataManager ? _
-        )
-        .map {
-          case resp: AfterPrediction =>
-            EmailRecognitionResponse(
-              id = resp.id,
-              label = Labels.fromString(resp.`type`.name),
-              models = resp.models.map(x => Model(percent = x.percent, typeOfModel = ModelTypes.fromString(x.typeOfModel)))
-            )
-        }
+      val textOfEmail = new String(Base64.getDecoder.decode(email.text))
+        log.debug(textOfEmail)
+      Try(
+        CleanDataManager
+          .PredictionData(
+            EmailParser
+              .parseFromString(textOfEmail, EmailType.NotObtained)
+          )
+      ) fold (
+        ex => Future.failed(ex),
+        cleanDataManager ? _
+      ) map {
+        case resp: AfterPrediction =>
+          EmailRecognitionResponse(
+            id = resp.id,
+            label = Labels.fromString(resp.`type`.name),
+            models = resp.models.map(x => Model(percent = x.percent, typeOfModel = ModelTypes.fromString(x.typeOfModel)))
+          )
+      }
     } catch {
       case th: Throwable => Future.failed(th)
     }

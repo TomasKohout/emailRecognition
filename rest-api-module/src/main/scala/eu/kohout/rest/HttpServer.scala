@@ -57,7 +57,8 @@ class HttpServer(
                   StatusCodes.BadRequest,
                   Json
                     .obj(
-                      "error" -> ex.getMessage.asJson
+                      "error" -> ex.getMessage.asJson,
+                      "stack" -> ex.getStackTrace.map(_.toString).asJson
                     )
                     .toString()
                 )

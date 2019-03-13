@@ -149,7 +149,6 @@ class RootActor extends Actor with Stash {
       cleanDataManager ! CleanDataManager.ShareBag(msg.bag)
       modelManager ! ModelMessages.FeatureSizeForBayes(msg.bayesSize)
       loadDataManager ! LoadDataManager.DictionaryExists
-//      self ! RootActor.StartCrossValidation
 
       unstashAll()
 
@@ -160,22 +159,28 @@ class RootActor extends Actor with Stash {
 
   private def started: Receive = {
     case HttpMessages.RootActor.KillActors =>
-      resultsAggregator ! PoisonPill
-      dictionaryResolver ! PoisonPill
-      loadDataManager ! PoisonPill
-      cleanDataManager ! PoisonPill
-      modelManager ! PoisonPill
-
-    case HttpMessages.RootActor.StartActors =>
       resultsAggregator ! Done
       dictionaryResolver ! Done
       loadDataManager ! Done
       cleanDataManager ! Done
       modelManager ! Done
 
+      cleanDataManager ! CleanDataManager.ShareBag(bag.getOrElse(throw new Exception("Does not have a bag!")))
+      modelManager ! ModelMessages.FeatureSizeForBayes(bayesSize.getOrElse(throw new Exception("Does not have a bayes size!")))
+      loadDataManager ! LoadDataManager.DictionaryExists
+
+
+    case HttpMessages.RootActor.StartActors =>
+      resultsAggregator ! "msg"
+      dictionaryResolver ! "msg"
+      loadDataManager ! "msg"
+      cleanDataManager ! "msg"
+      modelManager ! "msg"
+
     case HttpMessages.RootActor.StartCrossValidation =>
       log.info("Starting cross validation")
       loadDataManager ! LoadDataManager.StartCrossValidation
+      modelManager ! ModelMessages.WriteModels
 
     case ModelMessages.LastPredictionMade =>
       resultsAggregator ! ResultsAggregator.WriteResults

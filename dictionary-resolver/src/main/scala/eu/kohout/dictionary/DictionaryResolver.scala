@@ -2,15 +2,14 @@ package eu.kohout.dictionary
 
 import java.io.{File, FileWriter}
 
+import akka.Done
 import akka.actor.{Actor, ActorRef, Props}
 import akka.cluster.sharding.ShardRegion
 import akka.pattern.ask
 import akka.util.Timeout
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
-import eu.kohout.cleandata.CleanDataManager
 import eu.kohout.dictionary.DictionaryResolver.{Configuration, Dictionary, ResolveDictionary}
-import eu.kohout.loaddata.LoadDataManager.CreateDictionaryFromData
 import eu.kohout.parser.EmailType.{Ham, Spam}
 import smile.feature.Bag
 
@@ -94,12 +93,15 @@ class DictionaryResolver(
 
       ()
 
+    case Done => throw new Exception ("Reseting actor")
+
+
   }
 
   private def createDictionary: Future[Dictionary] =
-    (loadDataManager ? CreateDictionaryFromData)
+    context.system.actorOf(CleansedDataAccumulator.props()).?(CleansedDataAccumulator.CreateDictionary)(createDictionaryTimeout, loadDataManager)
       .map {
-        case CleanDataManager.Dictionary(data) =>
+        case CleansedDataAccumulator.Dictionary(data) =>
           dictionary = data.flatMap(_.data).map(_._1)
 
           val groupedByType = data.groupBy(_.`type`)

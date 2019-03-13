@@ -34,19 +34,13 @@ object ModelMessages {
     id: String,
     data: Array[Double],
     `type`: EmailType,
-    htmlTags: Map[String, Int],
-    replyTo: Option[ActorRef] = None)
+    htmlTags: Map[String, Int])
 
-  case class TrainSeq(
-    seq: Seq[CleansedEmail],
-    models: Seq[ModelType] = Seq.empty)
-      extends ModelMessages
-
-  case class Train(data: CleansedEmail)
+  case class Train(data: CleansedEmail) extends ModelMessages
 
   case class FeatureSizeForBayes(size: Int) extends ModelMessages
 
-  case class Predict(data: CleansedEmail, replyTo: Option[ActorRef] = None) extends ModelMessages
+  case class Predict(data: CleansedEmail) extends ModelMessages
 
   case object Trained extends ModelMessages
 
@@ -54,7 +48,12 @@ object ModelMessages {
 
   case object WriteModels extends ModelMessages
 
+  case object SwitchToPrediction extends ModelMessages
+
+
   private[model] case object ForgotModel extends ModelMessages
+  private[model] case object TrainModels extends ModelMessages
+  private[model] case class TrainData(data: Seq[CleansedEmail]) extends ModelMessages
 
   sealed trait ModelMessages
 

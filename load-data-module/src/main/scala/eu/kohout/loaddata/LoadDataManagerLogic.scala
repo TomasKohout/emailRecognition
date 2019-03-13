@@ -7,7 +7,7 @@ import akka.routing.RoundRobinPool
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
 import eu.kohout.loaddata.LoadDataManagerLogic.Configuration
-import eu.kohout.parser.{Email, EmailType}
+import eu.kohout.parser.EmailType
 
 import scala.io.Source
 
@@ -48,8 +48,6 @@ trait LoadDataManagerLogic extends Actor {
 
   // map that hold information about type (spam/ham) of email stored in specific file
   protected var emailTypes: Map[FileName, EmailType] = _
-  protected var soFarLoadedData: Seq[Email] = Seq.empty
-  protected var howManyEmailsToLoad = 0
 
   protected def splitLabelsRow(row: String): Option[(FileName, EmailType)] = {
     val index = row.indexOf(" ")

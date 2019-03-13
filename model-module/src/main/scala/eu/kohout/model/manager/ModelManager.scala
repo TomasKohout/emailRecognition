@@ -9,6 +9,7 @@ import akka.util.Timeout
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
 import ModelMessages._
+import akka.Done
 import akka.cluster.sharding.ShardRegion
 import eu.kohout.aggregator.{Model, ModelType, ResultsAggregator}
 import eu.kohout.aggregator.ResultsAggregator.AfterPrediction
@@ -80,7 +81,8 @@ class ModelManager(
 
   private val defaultTrainModels = Seq(ModelType.NaiveBayes, ModelType.SVM)
   private var htmlEvaluator: ActorRef = _
-  private var lastPredictionCheck: Option[Cancellable] = None
+
+  private var scheduledMessage: Option[Cancellable] = None
 
   private val naiveRoutees: ActorRef =
     createPredictors(
@@ -105,18 +107,14 @@ class ModelManager(
     name = "SVMTrainer"
   )
 
-  private def receiveTrain(message: TrainSeq): Future[Unit] =
+  private def trainModels(message: TrainData): Future[Unit] =
     Future
-      .sequence({
-        if (message.models.isEmpty) defaultTrainModels
-        else message.models
-      }.map {
+      .sequence(defaultTrainModels map {
         case ModelType.SVM =>
           svmTrainer.ask(message)(timeout = 10 minutes)
         case ModelType.NaiveBayes =>
           naiveTrainer.ask(message)(timeout = 10 minutes)
-      })
-      .map(_ => rootActor ! ModelMessages.Trained)
+      }) map (_ => rootActor ! ModelMessages.Trained) map (_ => self ! SwitchToPrediction)
 
   private def receivePredict(
     message: Predict,
@@ -149,48 +147,100 @@ class ModelManager(
       )
       typeOfEmail = if (naiveResult.result == 1 && svmResult.result == -1) Ham
       else if (naiveResult.result == -1 && svmResult.result == 1) Ham
+      else if (naiveResult.result == 1 && svmResult.result == 1) Ham
       else Spam
       percent = svmResult.result + naiveResult.result
-      result = AfterPrediction(id = message.data.id, `type` = typeOfEmail, percent = percent, models = resultModels)
+      result = AfterPrediction(
+        id = message.data.id,
+        `type` = typeOfEmail,
+        percent = percent,
+        models = resultModels
+      )
     } yield {
-      message.replyTo.foreach(_ ! result)
+      replyTo ! result
       resultsAggregator ! result
     }
   }
 
-  override def receive: Receive = {
+  private def shiftScheduledMessage(
+    cancellable: Option[Cancellable],
+    receiver: ActorRef,
+    modelMessages: ModelMessages
+  ): Option[Cancellable] =
+    cancellable.fold(
+      Some(context.system.scheduler.scheduleOnce(30 seconds, receiver, modelMessages))
+    ) { cancellable =>
+      cancellable.cancel()
+      Some(context.system.scheduler.scheduleOnce(30 seconds, receiver, modelMessages))
+    }
+
+  private var trainData: Seq[CleansedEmail] = Seq.empty
+
+  private def writeAndForgot(): Unit = {
+    svmTrainer ! WriteModels
+    naiveTrainer ! WriteModels
+    svmTrainer ! ForgotModel
+    naiveTrainer ! ForgotModel
+    naiveRoutees ! Broadcast(ForgotModel)
+    svmRoutees ! Broadcast(ForgotModel)
+  }
+
+  private def predictState: Receive = {
     case WriteModels =>
-      svmTrainer ! WriteModels
-      naiveTrainer ! WriteModels
-      svmTrainer ! ForgotModel
-      naiveTrainer ! ForgotModel
-      naiveRoutees ! Broadcast(ForgotModel)
-      svmRoutees ! Broadcast(ForgotModel)
-    case message: TrainSeq =>
-      receiveTrain(message)
-      ()
+      writeAndForgot()
+      context.become(trainState)
+      log.info("Going to train state, completely forgot all.")
 
     case message: Predict =>
       val replyTo = sender()
       log.debug("Prediction for id {}", message.data.id)
       receivePredict(message, replyTo)
-      lastPredictionCheck = lastPredictionCheck.fold(
-        Some(
-          context.system.scheduler.scheduleOnce(30 seconds, rootActor, ModelMessages.LastPredictionMade)
-        )
-      ) { cancellable =>
-        cancellable.cancel()
-        Some(
-          context.system.scheduler.scheduleOnce(
-            30 seconds,
-            rootActor,
-            ModelMessages.LastPredictionMade
-          )
-        )
-      }
 
+      scheduledMessage =
+        shiftScheduledMessage(scheduledMessage, rootActor, ModelMessages.LastPredictionMade)
+
+    case Done => throw new Exception ("Reseting actor")
+
+    case other =>
+      log.warn("Prediction state")
+      log.warn(s"$other message")
+
+  }
+
+  private def shiftState: Receive = {
+    case SwitchToPrediction =>
+      log.info("Going to predictState")
+      context.become(predictState)
+
+    case Done => throw new Exception ("Reseting actor")
+
+    case other =>
+      log.warn("Shift state")
+      log.warn(s"$other message")
+  }
+
+  private def trainState: Receive = {
+    case message: Train =>
+      trainData = trainData :+ message.data
+
+      scheduledMessage = shiftScheduledMessage(scheduledMessage, self, ModelMessages.TrainModels)
+
+    case TrainModels =>
+      log.info("Going to train models")
+      trainModels(TrainData(trainData))
+      context.become(shiftState)
       ()
 
+    case Done => throw new Exception ("Reseting actor")
+
+    case other =>
+      log.warn("Train state")
+      log.warn(s"$other message")
+  }
+
+  override def receive: Receive = startingState
+
+  private def startingState: Receive = {
     case msg: FeatureSizeForBayes =>
       naiveTrainer = startTrainer(
         props = GenericTrainer
@@ -218,8 +268,12 @@ class ModelManager(
         name = "NaiveTrainer"
       )
 
+      log.info("Going to trainState")
+      context.become(trainState)
+
     case other =>
-      log.error("other message")
+      log.warn("Starting state")
+      log.warn(s"$other message")
   }
 
   def startTrainer(
@@ -228,19 +282,21 @@ class ModelManager(
     name: String
   ): ActorRef = {
     val singleton = context.actorOf(
-      ClusterSingletonManager.props(
-        singletonProps = props.withDispatcher("model-dispatcher"),
-        terminationMessage = PoisonPill,
-        settings = ClusterSingletonManagerSettings(specificConfig)
-      )
+      ClusterSingletonManager
+        .props(
+          singletonProps = props.withDispatcher("model-dispatcher"),
+          terminationMessage = PoisonPill,
+          settings = ClusterSingletonManagerSettings(specificConfig)
+        )
         .withDispatcher("model-dispatcher")
     )
 
     context.actorOf(
-      ClusterSingletonProxy.props(
-        singletonManagerPath = singleton.path.toStringWithoutAddress,
-        settings = ClusterSingletonProxySettings(specificConfig)
-      )
+      ClusterSingletonProxy
+        .props(
+          singletonManagerPath = singleton.path.toStringWithoutAddress,
+          settings = ClusterSingletonProxySettings(specificConfig)
+        )
         .withDispatcher("model-dispatcher")
     )
   }
@@ -259,8 +315,7 @@ class ModelManager(
           maxInstancesPerNode = numberOfPredictors,
           allowLocalRoutees = true
         )
-      )
-        .props(GenericPredictor.props)
+      ).props(GenericPredictor.props)
         .withDispatcher("model-dispatcher"),
       name = GenericPredictor.name(modelName)
     )

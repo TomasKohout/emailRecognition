@@ -2,6 +2,7 @@ package eu.kohout.aggregator
 
 import java.io.{File, PrintWriter}
 
+import akka.Done
 import akka.actor.{Actor, ActorRef, ActorSystem, Cancellable, PoisonPill, Props}
 import akka.cluster.sharding.ShardRegion
 import com.typesafe.scalalogging.Logger
@@ -106,6 +107,9 @@ class ResultsAggregator extends Actor {
         results.clear()
         countOfResult = countOfResult + 1
       }
+
+    case Done => throw new Exception ("Reseting actor")
+
 
   }
 

@@ -32,23 +32,34 @@ class GenericTrainer(
   override var model: OnlineClassifier[Array[Double]] = modelCreator(())
 
   override def receive: Receive = {
-    case data: TrainSeq =>
-      val classifiers = data.seq
-        .map(_.`type`.y)(collection.breakOut[Seq[CleansedEmail], Int, Array[Int]])
+    case TrainData(data) =>
+      val replyTo = sender()
+      val classifiers = data
+        .map(_.`type`.y)(collection.breakOut[Seq[CleansedEmail], Int, List[Int]])
 
-      model match {
-        case naive: NaiveBayes =>
-          log.info("Learning naive bayes!")
-          naive.learn(data.seq.map(_.data).toArray, classifiers)
-        case svm: SVM[Array[Double]] =>
-          log.debug("Learning!")
-          svm.learn(data.seq.map(_.data).toArray, classifiers)
-          svm.finish()
+      log.debug("Learning!")
+
+      data.map(_.data).foldLeft(classifiers){
+        case (Nil, x) =>
+          Nil
+        case (y :: Nil, x) =>
+          model.learn(x, y)
+          Nil
+        case (y :: ys, x ) =>
+          model.learn(x, y)
+          ys
       }
 
-      sender() ! Trained
-      predictors ! Broadcast(UpdateModel(serializer.toXML(model)))
+      model match {
+        case svm: SVM[Array[Double]] =>
+          log.debug("Finishing svm learning!")
+          svm.finish()
+        case _ => ()
+      }
 
+
+      replyTo ! Trained
+      predictors ! Broadcast(UpdateModel(serializer.toXML(model)))
 
     case WriteModels =>
       val xmlModel = serializer.toXML(model)

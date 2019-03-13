@@ -6,6 +6,7 @@ import akka.actor.{Actor, ActorRef, Props}
 import com.typesafe.scalalogging.Logger
 import eu.kohout.aggregator.ResultsAggregator.BeforePrediction
 import eu.kohout.cleandata.CleanDataManager
+import eu.kohout.cleandata.CleanDataManager.{CleanDataForDictionary, PredictionData, TrainData}
 import eu.kohout.loaddata.LoadDataManager.{DecreaseForError, LoadDataManagerMessages, LoadedData}
 import eu.kohout.parser.{EmailParser, EmailType}
 
@@ -18,15 +19,19 @@ object LoadDataWorker {
     resultsAggregator: ActorRef
   ): Props = Props(new LoadDataWorker(cleanDataManager, resultsAggregator))
 
-  case class LoadTestData(
+  case class LoadPredictionData(
     email: File,
     label: EmailType)
       extends LoadDataWorkerMessage
 
-  case class LoadData(
+  case class LoadTrainData(
     email: File,
-    label: EmailType,
-    sendNext: Boolean = false)
+    label: EmailType)
+      extends LoadDataWorkerMessage
+
+  case class LoadDataForDictionary(
+    email: File,
+    label: EmailType)
       extends LoadDataWorkerMessage
 
   sealed trait LoadDataWorkerMessage
@@ -41,34 +46,61 @@ class LoadDataWorker(
   private val log = Logger(self.path.toStringWithoutAddress)
 
   override def receive: Receive = {
-    case loadData: LoadData =>
-      log.debug(
-        "Load data message received {}, from {}",
-        loadData.email.getName,
-        sender().path.toStringWithoutAddress
-      )
+    case loadData: LoadDataForDictionary =>
+      log.debug("Load data for dictionary received {}", loadData.email.getName)
 
-      val result = Try(
+      val replyTo = sender()
+
+      Try(
         LoadedData(
           EmailParser
             .parseFromFile(loadData.email.getAbsolutePath, loadData.label),
           loadData.email.getAbsolutePath
         )
-      ).fold(
-        exception => DecreaseForError(Some(exception)),
-        data => {
-          if (loadData.sendNext) {
-            resultsAggregator ! BeforePrediction(
-              data.email.id,
-              data.email.`type`
-            )
-            cleanDataManager ! CleanDataManager.TestData(data.email)
-          }
-          data
-        }
+      ) fold (
+        exception => {
+          log error ("Exception occurred when loading data.", exception)
+          None
+        },
+        data => Some(data.email)
+      ) foreach (data => cleanDataManager.!(CleanDataManager.CleanDataForDictionary(data))(replyTo))
+
+    case loadData: LoadTrainData =>
+      log.debug(
+        "Load train data message received {}, from {}",
+        loadData.email.getName,
+        sender().path.toStringWithoutAddress
       )
 
-      if (!loadData.sendNext) sender() ! result
+      Try(
+        TrainData(
+          EmailParser
+            .parseFromFile(loadData.email.getAbsolutePath, loadData.label)
+        )
+      ).fold(
+        exception => log.error("Exception occurred when loading data", exception),
+        data => cleanDataManager ! CleanDataManager.TrainData(data.email)
+      )
+
+    case message: LoadPredictionData =>
+      log.debug(
+        "Load test data message received {}, from {}",
+        message.email.getName,
+        sender().path.toStringWithoutAddress
+      )
+
+      Try(
+        PredictionData(
+          EmailParser
+            .parseFromFile(message.email.getAbsolutePath, message.label)
+        )
+      ).fold(
+        exception => log.error("Exception occurred when loading data", exception),
+        data => {
+          resultsAggregator ! BeforePrediction(id = data.email.id, `type` = data.email.`type`)
+          cleanDataManager ! CleanDataManager.PredictionData(data.email)
+        }
+      )
 
     case other =>
       log.debug("Unsuported message {}", other)
