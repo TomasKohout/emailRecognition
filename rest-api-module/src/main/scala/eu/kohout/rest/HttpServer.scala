@@ -3,6 +3,7 @@ package eu.kohout.rest
 import akka.Done
 import akka.actor.{ActorRef, ActorSystem}
 import akka.http.scaladsl.Http
+import akka.http.scaladsl.Http.ServerBinding
 import akka.http.scaladsl.marshalling.Marshal
 import akka.http.scaladsl.model.{HttpResponse, ResponseEntity, StatusCodes}
 import akka.http.scaladsl.server.Route
@@ -119,12 +120,22 @@ class HttpServer(
             }
           }
         }
+      } ~
+      get {
+        path("application" / "!terminate") {
+          extractExecutionContext { implicit ec =>
+            val response = httpServerHandler
+              .terminate()
+              .flatMap(_ => Marshal(Json.obj()).to[ResponseEntity])
+
+            onSuccess(response) { responseEntity =>
+              complete(HttpResponse(entity = responseEntity))
+            }
+          }
+        }
       }
 
   }
 
-  private val bindingFuture = Http().bindAndHandle(routes, address, port)
-
-  def stop(implicit ec: ExecutionContext): Future[Done] =
-    bindingFuture.flatMap(_.unbind())
+  private var bindingFuture: Future[ServerBinding] = Http().bindAndHandle(routes, address, port)
 }

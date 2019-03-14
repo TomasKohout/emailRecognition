@@ -167,9 +167,7 @@ class ModelManager(
     receiver: ActorRef,
     modelMessages: ModelMessages
   ): Option[Cancellable] =
-    cancellable.fold(
-      Some(context.system.scheduler.scheduleOnce(30 seconds, receiver, modelMessages))
-    ) { cancellable =>
+    cancellable.flatMap{ cancellable =>
       cancellable.cancel()
       Some(context.system.scheduler.scheduleOnce(30 seconds, receiver, modelMessages))
     }
@@ -186,9 +184,13 @@ class ModelManager(
   }
 
   private def predictState: Receive = {
+    case SetShiftMessage =>
+      scheduledMessage = Some(context.system.scheduler.scheduleOnce(30 seconds, rootActor, ModelMessages.LastPredictionMade))
+
     case WriteModels =>
       writeAndForgot()
       context.become(trainState)
+      scheduledMessage = None
       log.info("Going to train state, completely forgot all.")
 
     case message: Predict =>
@@ -196,8 +198,7 @@ class ModelManager(
       log.debug("Prediction for id {}", message.data.id)
       receivePredict(message, replyTo)
 
-      scheduledMessage =
-        shiftScheduledMessage(scheduledMessage, rootActor, ModelMessages.LastPredictionMade)
+      scheduledMessage = shiftScheduledMessage(scheduledMessage, rootActor, ModelMessages.LastPredictionMade)
 
     case Done => throw new Exception ("Reseting actor")
 
@@ -220,6 +221,9 @@ class ModelManager(
   }
 
   private def trainState: Receive = {
+    case SetShiftMessage =>
+      scheduledMessage = Some(context.system.scheduler.scheduleOnce(1 minute, self, ModelMessages.TrainModels))
+
     case message: Train =>
       trainData = trainData :+ message.data
 
@@ -228,6 +232,7 @@ class ModelManager(
     case TrainModels =>
       log.info("Going to train models")
       trainModels(TrainData(trainData))
+      scheduledMessage = None
       context.become(shiftState)
       ()
 

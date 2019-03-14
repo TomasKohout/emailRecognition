@@ -26,10 +26,13 @@ object LoadDataManager {
   def props(
     config: Config,
     cleanDataManager: ActorRef,
-    resultsAggregator: ActorRef
-  ): Props = Props(new LoadDataManager(config, cleanDataManager, resultsAggregator))
+    resultsAggregator: ActorRef,
+    rootActor: ActorRef
+  ): Props = Props(new LoadDataManager(config, cleanDataManager, resultsAggregator, rootActor))
 
   private type LoadDataWorkers = ActorRef
+
+  case object CrossValidationDone extends LoadDataManagerMessages
 
   case object LoadTrainData extends LoadDataManagerMessages
   case object CreateDictionaryFromData extends LoadDataManagerMessages
@@ -51,7 +54,8 @@ object LoadDataManager {
 class LoadDataManager(
   val config: Config,
   val cleanDataManager: ActorRef,
-  val resultsAggregator: ActorRef)
+  val resultsAggregator: ActorRef,
+  rootActor: ActorRef)
     extends Actor
     with LoadDataManagerLogic {
   import LoadDataManager._
@@ -146,6 +150,8 @@ class LoadDataManager(
 
         sendLoadedFiles(trainFiles, LoadDataWorker.LoadTrainData)
       } else {
+        rootActor ! LoadDataManager.CrossValidationDone
+
         context.become(waitingForOrders)
       }
     case ContinueCrossValidation =>

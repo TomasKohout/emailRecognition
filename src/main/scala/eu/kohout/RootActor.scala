@@ -15,6 +15,7 @@ import eu.kohout.rest.HttpMessages
 import eu.kohout.rest.{HttpServer, HttpServerHandler}
 import smile.feature.Bag
 
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
 
 object RootActor {
@@ -100,7 +101,7 @@ class RootActor extends Actor with Stash {
     name = CleanDataManager.name
   )
 
-  val httpServer = new HttpServer(config, new HttpServerHandler(cleanDataManager, self)(5 seconds))(context.system)
+  val httpServer = new HttpServer(config, new HttpServerHandler(cleanDataManager, self, resultsAggregator)(5 seconds))(context.system)
 
   private val loadDataManager = startSharding(
     system = context.system,
@@ -108,13 +109,12 @@ class RootActor extends Actor with Stash {
       .props(
         config.getConfig(LoadDataManagerLogic.Configuration.configPath),
         cleanDataManager = cleanDataManager,
-        resultsAggregator = resultsAggregator
+        resultsAggregator = resultsAggregator,
+        rootActor = self
       ).withDispatcher("load-dispatcher"),
     shardResolver = LoadDataManager.shardResolver,
     idExtractor = LoadDataManager.idExtractor,
     name = LoadDataManager.name
-
-
   )
 
   private val dictionaryResolver = startSharding(
@@ -131,6 +131,9 @@ class RootActor extends Actor with Stash {
   )
 
   override def receive: Receive = startApplication
+
+  implicit val ec: ExecutionContext = context.dispatcher
+
   private var bag: Option[Bag[String]] = None
   private var bayesSize: Option[Int] = None
 
@@ -141,7 +144,6 @@ class RootActor extends Actor with Stash {
 
     case msg: DictionaryResolver.DictionaryResolved =>
       log.info("Dictionary resolved")
-      context.become(started)
 
       bag = Some(msg.bag)
       bayesSize = Some(msg.bayesSize)
@@ -149,7 +151,7 @@ class RootActor extends Actor with Stash {
       cleanDataManager ! CleanDataManager.ShareBag(msg.bag)
       modelManager ! ModelMessages.FeatureSizeForBayes(msg.bayesSize)
       loadDataManager ! LoadDataManager.DictionaryExists
-
+      context.become(waitingForOrders)
       unstashAll()
 
     case _ =>
@@ -157,8 +159,34 @@ class RootActor extends Actor with Stash {
 
   }
 
-  private def started: Receive = {
-    case HttpMessages.RootActor.KillActors =>
+  private def crossValidation: Receive = {
+    case HttpMessages.RootActor.StartCrossValidation =>
+      log.info("Starting cross validation")
+
+      loadDataManager ! LoadDataManager.StartCrossValidation
+      modelManager ! ModelMessages.WriteModels
+      modelManager ! ModelMessages.SetShiftMessage
+
+    case ModelMessages.LastPredictionMade =>
+      resultsAggregator ! ResultsAggregator.WriteResults
+      modelManager ! ModelMessages.WriteModels
+      loadDataManager ! LoadDataManager.StartCrossValidation
+
+    case ModelMessages.Trained =>
+      loadDataManager ! LoadDataManager.ContinueCrossValidation
+      modelManager ! ModelMessages.SetShiftMessage
+
+    case LoadDataManager.CrossValidationDone =>
+      log.info("Cross validation is done")
+
+      context.become(waitingForOrders)
+
+    case other =>
+      log.warn("Unsupported message received {}", other)
+  }
+
+  private def waitingForOrders: Receive = {
+    case HttpMessages.RootActor.RestartActors =>
       resultsAggregator ! Done
       dictionaryResolver ! Done
       loadDataManager ! Done
@@ -169,33 +197,39 @@ class RootActor extends Actor with Stash {
       modelManager ! ModelMessages.FeatureSizeForBayes(bayesSize.getOrElse(throw new Exception("Does not have a bayes size!")))
       loadDataManager ! LoadDataManager.DictionaryExists
 
-
-    case HttpMessages.RootActor.StartActors =>
-      resultsAggregator ! "msg"
-      dictionaryResolver ! "msg"
-      loadDataManager ! "msg"
-      cleanDataManager ! "msg"
-      modelManager ! "msg"
-
     case HttpMessages.RootActor.StartCrossValidation =>
-      log.info("Starting cross validation")
-      loadDataManager ! LoadDataManager.StartCrossValidation
-      modelManager ! ModelMessages.WriteModels
-
-    case ModelMessages.LastPredictionMade =>
-      resultsAggregator ! ResultsAggregator.WriteResults
-      modelManager ! ModelMessages.WriteModels
-      loadDataManager ! LoadDataManager.StartCrossValidation
-
-    case ModelMessages.Trained =>
-      loadDataManager ! LoadDataManager.ContinueCrossValidation
+      context.become(crossValidation)
+      self ! HttpMessages.RootActor.StartCrossValidation
 
     case HttpMessages.RootActor.TrainModel =>
-      log.info("Beginning the process of training model")
-      modelManager ! ModelMessages.WriteModels
-      loadDataManager ! LoadDataManager.LoadTrainData
-    case _ =>
+      context.become(trainModels)
+      self ! HttpMessages.RootActor.TrainModel
+
+    case HttpMessages.RootActor.Terminate =>
+      log.info("Terminating actor system, bye.")
+      context.system.terminate()
       ()
+
+    case other =>
+      log.warn("Unsupported message received {}", other)
+
   }
 
+  private def trainModels: Receive = {
+    case HttpMessages.RootActor.TrainModel =>
+      log.info("Beginning the process of training model")
+
+
+      modelManager ! ModelMessages.WriteModels
+      loadDataManager ! LoadDataManager.LoadTrainData
+      modelManager ! ModelMessages.SetShiftMessage
+
+    case ModelMessages.Trained =>
+      log.info("Models trained, becoming waitingForOrders")
+      context.become(waitingForOrders)
+
+    case other =>
+      log.warn("Unsupported message received {}", other)
+
+  }
 }

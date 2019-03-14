@@ -3,10 +3,15 @@ package eu.kohout.rest
 import akka.actor.ActorRef
 import akka.pattern.ask
 import akka.util.Timeout
-import eu.kohout.aggregator.ResultsAggregator.AfterPrediction
+import eu.kohout.aggregator.ResultsAggregator.{AfterPrediction, BeforePrediction}
 import eu.kohout.cleandata.CleanDataManager
 import eu.kohout.parser.{EmailParser, EmailType}
-import eu.kohout.rest.HttpMessages.{EmailRecognitionRequest, EmailRecognitionResponse, Model, RootActor}
+import eu.kohout.rest.HttpMessages.{
+  EmailRecognitionRequest,
+  EmailRecognitionResponse,
+  Model,
+  RootActor
+}
 import java.util.Base64
 
 import com.typesafe.scalalogging.Logger
@@ -16,15 +21,20 @@ import scala.util.Try
 
 class HttpServerHandler(
   cleanDataManager: ActorRef,
-  rootActor: ActorRef
+  rootActor: ActorRef,
+  resultsAggregator: ActorRef
 )(
   implicit timeout: Timeout) {
   val log = Logger(getClass)
 
-  def recognizeEmail(email: EmailRecognitionRequest)(implicit ec: ExecutionContext): Future[EmailRecognitionResponse] =
+  def recognizeEmail(
+    email: EmailRecognitionRequest
+  )(
+    implicit ec: ExecutionContext
+  ): Future[EmailRecognitionResponse] =
     try {
       val textOfEmail = new String(Base64.getDecoder.decode(email.text))
-        log.debug(textOfEmail)
+      log.debug(textOfEmail)
       Try(
         CleanDataManager
           .PredictionData(
@@ -33,13 +43,23 @@ class HttpServerHandler(
           )
       ) fold (
         ex => Future.failed(ex),
-        cleanDataManager ? _
+        loadedEmail => {
+
+          resultsAggregator ! BeforePrediction(
+            id = loadedEmail.email.id,
+            `type` = loadedEmail.email.`type`
+          )
+          cleanDataManager ? loadedEmail
+        }
+
       ) map {
         case resp: AfterPrediction =>
           EmailRecognitionResponse(
             id = resp.id,
             label = Labels.fromString(resp.`type`.name),
-            models = resp.models.map(x => Model(percent = x.percent, typeOfModel = ModelTypes.fromString(x.typeOfModel)))
+            models = resp.models.map(
+              x => Model(percent = x.percent, typeOfModel = ModelTypes.fromString(x.typeOfModel))
+            )
           )
       }
     } catch {
@@ -51,6 +71,8 @@ class HttpServerHandler(
   def crossValidation(): Future[Unit] =
     Future.successful(rootActor ! RootActor.StartCrossValidation)
 
-  def killActors(): Future[Unit] = Future.successful(rootActor ! RootActor.KillActors)
+  def killActors(): Future[Unit] = Future.successful(rootActor ! RootActor.RestartActors)
   def startActors(): Future[Unit] = Future.successful(rootActor ! RootActor.StartActors)
+
+  def terminate(): Future[Unit] = Future.successful(rootActor ! RootActor.Terminate)
 }

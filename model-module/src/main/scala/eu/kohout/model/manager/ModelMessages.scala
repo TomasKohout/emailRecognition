@@ -50,6 +50,7 @@ object ModelMessages {
 
   case object SwitchToPrediction extends ModelMessages
 
+  case object SetShiftMessage extends ModelMessages
 
   private[model] case object ForgotModel extends ModelMessages
   private[model] case object TrainModels extends ModelMessages

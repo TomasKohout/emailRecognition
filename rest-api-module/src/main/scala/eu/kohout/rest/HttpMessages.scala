@@ -1,11 +1,13 @@
 package eu.kohout.rest
 
 object HttpMessages {
+
   object RootActor {
     case object StartCrossValidation
     case object TrainModel
-    case object KillActors
+    case object RestartActors
     case object StartActors
+    case object Terminate
   }
   case class EmailRecognitionRequest(text: String) extends HttpMessage
 
