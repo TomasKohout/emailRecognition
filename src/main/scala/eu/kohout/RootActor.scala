@@ -4,8 +4,11 @@ import akka.Done
 import akka.actor.{Actor, ActorContext, ActorRef, ActorSystem, PoisonPill, Props, Stash}
 import akka.cluster.sharding.ShardRegion.{ExtractEntityId, ExtractShardId}
 import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings}
+import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
+import com.thoughtworks.xstream.XStream
 import com.typesafe.config.{Config, ConfigFactory}
 import com.typesafe.scalalogging.Logger
+import eu.kohout.Main.actorSystem
 import eu.kohout.aggregator.ResultsAggregator
 import eu.kohout.cleandata.CleanDataManager
 import eu.kohout.dictionary.DictionaryResolver
@@ -21,20 +24,63 @@ import scala.concurrent.duration._
 object RootActor {
   val name = "RootActor"
 
-  def startSharding(
-    system: ActorSystem,
+  def clusterSingleton(
     props: Props,
-    idExtractor: ExtractEntityId,
-    shardResolver: ExtractShardId,
     name: String
-  ): ActorRef =
-    ClusterSharding(system).start(
-      typeName = name,
-      entityProps = props,
-      settings = ClusterShardingSettings(system),
-      extractEntityId = idExtractor,
-      extractShardId = shardResolver
+  )(
+    implicit actorContext: ActorContext
+  ): ActorRef = {
+    val singleton = actorContext
+      .actorOf(
+        ClusterSingletonManager
+          .props(
+            singletonProps = props,
+            terminationMessage = PoisonPill,
+            settings = ClusterSingletonManagerSettings(actorContext.system)
+          ),
+        name = name
+      )
+
+    actorContext.actorOf(
+      ClusterSingletonProxy
+        .props(
+          singletonManagerPath = singleton.path.toStringWithoutAddress,
+          settings = ClusterSingletonProxySettings(actorContext.system)
+        ),
+      name = name + "Proxy"
     )
+
+  }
+
+  def clusterSingleton(
+    props: Props,
+    name: String,
+    dispatcher: String
+  )(
+    implicit actorContext: ActorContext
+  ): ActorRef = {
+    val singleton = actorContext
+      .actorOf(
+        ClusterSingletonManager
+          .props(
+            singletonProps = props.withDispatcher(dispatcher),
+            terminationMessage = PoisonPill,
+            settings = ClusterSingletonManagerSettings(actorContext.system)
+          )
+          .withDispatcher(dispatcher),
+        name = name
+      )
+
+    actorContext.actorOf(
+      ClusterSingletonProxy
+        .props(
+          singletonManagerPath = singleton.path.toStringWithoutAddress,
+          settings = ClusterSingletonProxySettings(actorContext.system)
+        )
+        .withDispatcher(dispatcher),
+      name = name + "Proxy"
+    )
+  }
 
   object Configuration {
     val configPath = "root-actor"
@@ -45,7 +91,6 @@ object RootActor {
 
   case object StartCrossValidation extends RootActorMessage
   case object StartApplication extends RootActorMessage
-  case object TrainModel extends RootActorMessage
 
   sealed trait RootActorMessage
 
@@ -58,77 +103,71 @@ class RootActor extends Actor with Stash {
   private val rootActorConfig = config.getConfig(Configuration.configPath)
   private val resultsDir = rootActorConfig.getString(Configuration.resultsDir)
 
+  private val selfProxy = actorSystem.actorOf(
+    ClusterSingletonProxy
+      .props(
+        singletonManagerPath = context.parent.path.toStringWithoutAddress,
+        settings = ClusterSingletonProxySettings(actorSystem)
+      ),
+    name = RootActor.name + "Proxy"
+  )
 
   private val log = Logger(getClass)
 
-  private val resultsAggregator = startSharding(
-    system = context.system,
-    props = ResultsAggregator.props,
-    idExtractor = ResultsAggregator.idExtractor,
-    shardResolver = ResultsAggregator.shardResolver,
+  private val resultsAggregator = clusterSingleton(
+    ResultsAggregator.props,
     name = ResultsAggregator.name
   )
 
   private val modelManager =
-    startSharding(
-      system = context.system,
-      props = ModelManager
+    clusterSingleton(
+      ModelManager
         .props(
           config
             .getConfig(
               ModelManager.Configuration.configPath
             ),
-          self,
+          selfProxy,
           resultsAggregator
         ).withDispatcher("model-dispatcher"),
-      shardResolver = ModelManager.shardResolver,
-      idExtractor = ModelManager.idExtractor,
       name = ModelManager.name
     )
 
-  private val cleanDataManager = startSharding(
-    system = context.system,
-    props = CleanDataManager
+  private val cleanDataManager = clusterSingleton(
+    CleanDataManager
       .props(
         config = config
           .getConfig(
             CleanDataManager.Configuration.configPath
           ),
         modelManager = modelManager
-      ).withDispatcher("clean-dispatcher"),
-    shardResolver = CleanDataManager.shardResolver,
-    idExtractor = CleanDataManager.idExtractor,
-    name = CleanDataManager.name
+      ),
+    name = CleanDataManager.name,
+    dispatcher = "clean-dispatcher"
   )
 
-  val httpServer = new HttpServer(config, new HttpServerHandler(cleanDataManager, self, resultsAggregator)(5 seconds))(context.system)
-
-  private val loadDataManager = startSharding(
-    system = context.system,
+  private val loadDataManager = clusterSingleton(
     LoadDataManager
       .props(
         config.getConfig(LoadDataManagerLogic.Configuration.configPath),
         cleanDataManager = cleanDataManager,
         resultsAggregator = resultsAggregator,
-        rootActor = self
-      ).withDispatcher("load-dispatcher"),
-    shardResolver = LoadDataManager.shardResolver,
-    idExtractor = LoadDataManager.idExtractor,
-    name = LoadDataManager.name
+        rootActor = selfProxy
+      ),
+    LoadDataManager.name,
+    "load-dispatcher"
   )
 
-  private val dictionaryResolver = startSharding(
-    system = context.system,
+  private val dictionaryResolver = clusterSingleton(
     DictionaryResolver.props(
       config = config.getConfig(DictionaryResolver.Configuration.configPath),
       loadDataManager = loadDataManager,
-      rootActor = self
+      rootActor = selfProxy
     ),
-    shardResolver = DictionaryResolver.shardResolver,
-    idExtractor = DictionaryResolver.idExtractor,
     name = DictionaryResolver.name
-
   )
+
+  val httpServer = new HttpServer(config, new HttpServerHandler(cleanDataManager, selfProxy, resultsAggregator)(5 seconds))(context.system)
 
   override def receive: Receive = startApplication
 
@@ -136,8 +175,13 @@ class RootActor extends Actor with Stash {
 
   private var bag: Option[Bag[String]] = None
   private var bayesSize: Option[Int] = None
+  private val xStream = new XStream
 
   private def startApplication: Receive = {
+    case HttpMessages.RootActor.StartApplication =>
+      log.info("Starting application")
+      dictionaryResolver ! DictionaryResolver.ResolveDictionary
+
     case RootActor.StartApplication =>
       log.info("Starting application")
       dictionaryResolver ! DictionaryResolver.ResolveDictionary
@@ -145,7 +189,7 @@ class RootActor extends Actor with Stash {
     case msg: DictionaryResolver.DictionaryResolved =>
       log.info("Dictionary resolved")
 
-      bag = Some(msg.bag)
+      bag = Some(xStream.fromXML(msg.bag).asInstanceOf[Bag[String]])
       bayesSize = Some(msg.bayesSize)
 
       cleanDataManager ! CleanDataManager.ShareBag(msg.bag)
@@ -170,6 +214,7 @@ class RootActor extends Actor with Stash {
     case ModelMessages.LastPredictionMade =>
       resultsAggregator ! ResultsAggregator.WriteResults
       modelManager ! ModelMessages.WriteModels
+      modelManager ! ModelMessages.SetShiftMessage
       loadDataManager ! LoadDataManager.StartCrossValidation
 
     case ModelMessages.Trained =>
@@ -178,6 +223,7 @@ class RootActor extends Actor with Stash {
 
     case LoadDataManager.CrossValidationDone =>
       log.info("Cross validation is done")
+      modelManager ! ModelMessages.WriteModels
 
       context.become(waitingForOrders)
 
@@ -193,7 +239,7 @@ class RootActor extends Actor with Stash {
       cleanDataManager ! Done
       modelManager ! Done
 
-      cleanDataManager ! CleanDataManager.ShareBag(bag.getOrElse(throw new Exception("Does not have a bag!")))
+      cleanDataManager ! CleanDataManager.ShareBag(bag.map(xStream.toXML).getOrElse(throw new Exception("Does not have a bag!")))
       modelManager ! ModelMessages.FeatureSizeForBayes(bayesSize.getOrElse(throw new Exception("Does not have a bayes size!")))
       loadDataManager ! LoadDataManager.DictionaryExists
 

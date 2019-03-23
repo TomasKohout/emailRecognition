@@ -23,8 +23,8 @@
 
     <!-- use this to setup global logging level with one command -->
     <root level="DEBUG">
-             <appender-ref ref="ASYNC"/>
-       <!--<appender-ref ref="STDOUT"/>-->
+             <!--<appender-ref ref="ASYNC"/>-->
+       <appender-ref ref="STDOUT"/>
     </root>
 
     <logger name="eu.kohout" level="DEBUG"/>
