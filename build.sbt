@@ -89,7 +89,7 @@ lazy val `rest-api-module` = (project in file("rest-api-module"))
       enumeratum
     )
   )
-  .dependsOn(`model-module`, `clean-data-module`)
+  .dependsOn(`results-aggregator`, `clean-data-module`)
 
 lazy val `model-module` = (project in file("model-module"))
   .settings(
@@ -102,7 +102,7 @@ lazy val `model-module` = (project in file("model-module"))
       smileCore
     )
   )
-  .dependsOn(`email-parser`, `results-aggregator`)
+  .dependsOn(`results-aggregator`)
 
 lazy val `clean-data-module` = (project in file("clean-data-module"))
   .settings(
@@ -113,10 +113,11 @@ lazy val `clean-data-module` = (project in file("clean-data-module"))
       akkaCluster,
       akkaClusterSharding,
       smileCore,
-      symspell
+      symspell,
+      jsoup
     )
   )
-  .dependsOn(`email-parser`,  `model-module`)
+  .dependsOn(`model-module`)
 
 lazy val `load-data-module` = (project in file("load-data-module"))
   .settings(
@@ -128,7 +129,7 @@ lazy val `load-data-module` = (project in file("load-data-module"))
       akkaClusterSharding
     )
   )
-  .dependsOn(`email-parser`, `clean-data-module`, `results-aggregator`)
+  .dependsOn(`email-parser`, `clean-data-module`)
 
 lazy val `email-parser` = (project in file("email-parser"))
   .settings(
@@ -137,7 +138,11 @@ lazy val `email-parser` = (project in file("email-parser"))
     )
   )
 
-lazy val `aggregation` = (project in file("."))
+lazy val `email-recognition` = (project in file("."))
+  .settings(
+    mainClass in Compile := Some("eu.kohout.Main"),
+    bashScriptExtraDefines += """addJava "-Dconfig.file=${app_home}/../conf/application.conf""""
+  )
   .dependsOn(
     `load-data-module`,
     `clean-data-module`,
@@ -146,14 +151,7 @@ lazy val `aggregation` = (project in file("."))
     `email-parser`,
     `dictionary-resolver`
   )
-  .aggregate(
-    `load-data-module`,
-    `clean-data-module`,
-    `model-module`,
-    `rest-api-module`,
-    `email-parser`,
-    `dictionary-resolver`
-  )
+  .enablePlugins(JavaServerAppPackaging)
 
 lazy val `results-aggregator` = (project in file("results-aggregator"))
   .settings(
@@ -168,7 +166,9 @@ lazy val `results-aggregator` = (project in file("results-aggregator"))
   .dependsOn(`email-parser`)
 
 lazy val `dictionary-resolver` = (project in file("dictionary-resolver"))
-    .dependsOn(`clean-data-module`, `load-data-module`)
+    .dependsOn(`load-data-module`)
+
+
 
 assemblyMergeStrategy in assembly := {
   case "application.conf" => MergeStrategy.discard

@@ -1,8 +1,8 @@
-package eu.kohout.model.manager
+package eu.kohout.model.manager.predictor
 
 import akka.actor.{Actor, Props}
 import com.typesafe.scalalogging.Logger
-import ModelMessages.{CleansedEmail, ForgotModel, PredictResult, UpdateModel}
+import eu.kohout.model.manager.ModelMessages.{CleansedEmail, ForgotModel, PredictResult, UpdateModel}
 import eu.kohout.model.manager.traits.Predictor
 import smile.classification.Classifier
 

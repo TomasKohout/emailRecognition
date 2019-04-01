@@ -24,22 +24,24 @@ object ResultsAggregator {
 
   def props: Props = Props(new ResultsAggregator)
 
-  case class BeforePrediction(
-    id: String,
-    `type`: EmailType)
-      extends ResultsAggregatorMessages
-
   case class AfterPrediction(
     id: String,
-    `type`: EmailType,
+    realType: EmailType,
+    predictedType: EmailType,
     percent: Int,
     models: List[Model])
-      extends ResultsAggregatorMessages
-
-  case class Result(
-    beforePrediction: BeforePrediction,
-    prediction: Option[AfterPrediction] = None)
-      extends ResultsAggregatorMessages
+      extends ResultsAggregatorMessages {
+    override def toString: String = s"""
+                                       |{
+                                       | "id": "$id",
+                                       | "before": "${realType.toString}",
+                                       | "result": "${predictedType.toString}",
+                                       | "result": "$percent",
+                                       | "models":
+                                       |    "${models.map { _.toString}.mkString("[", ",\n", "]")}"
+                                       |}
+                                       |""".stripMargin
+  }
 
   case object WriteResults extends ResultsAggregatorMessages
 
@@ -48,7 +50,7 @@ object ResultsAggregator {
 
 class ResultsAggregator extends Actor {
   private val log = Logger(self.path.toStringWithoutAddress)
-  private val results: mutable.Map[String, Result] = mutable.Map.empty
+  private var results: Seq[AfterPrediction] = Seq.empty
 
   private var cancellable: Option[Cancellable] = None
 
@@ -59,35 +61,19 @@ class ResultsAggregator extends Actor {
   private def writeResults: Receive = {
     case result: AfterPrediction =>
       log.debug("After prediction for id {} received!", result.id)
-      log.debug("Before### {}", results.get(result.id))
-      results
-        .get(result.id)
-        .map(_.copy(prediction = Some(result)))
-        .map(results += result.id -> _)
-
-      log.debug("After### {}", results.get(result.id))
-      ()
-
-    case beforePrediction: BeforePrediction =>
-      log.debug("Before prediction for id {} received!", beforePrediction.id)
-      results += (beforePrediction.id -> Result(beforePrediction))
-      ()
+      results = results :+ result
 
     case WriteResults =>
+      val result = results
+        .map { value =>
 
-      val result = results.toSeq
-        .filter(_._2.prediction.isDefined)
-        .map {
-          case (key, value) =>
-            val prediction = value.prediction.get
-            val before = value.beforePrediction
-
-            (before.`type`, prediction.`type`, before.`type` == prediction.`type`)
-
+            (value.realType, value.predictedType, value.realType == value.predictedType)
         }
 
-      val path1 = new File(resultsDir + "/"  + "ResultsTable" + countOfResult + ".json")
+      val path1 = new File(resultsDir + "/" + "ResultsTable" + countOfResult + ".json")
+      val path2 = new File(resultsDir + "/" + "ActualResults" + countOfResult + ".json")
       val writer1 = new PrintWriter(path1)
+      val writer2 = new PrintWriter(path2)
 
       val table = result
         .map { res =>
@@ -100,16 +86,18 @@ class ResultsAggregator extends Actor {
       val matched = result.filter(_._3).count(_._3)
 
       try {
+        writer1.write("Accuracy\n")
         writer1.write(matched.toDouble / result.size.toDouble * 100 + " %")
         writer1.write(table)
+        writer2.write(mkStringFromResults)
       } finally {
         writer1.close()
-        results.clear()
+        writer2.close()
+        results = Seq.empty
         countOfResult = countOfResult + 1
       }
 
-    case Done => throw new Exception ("Reseting actor")
-
+    case Done => throw new Exception("Reseting actor")
 
   }
 
@@ -117,20 +105,7 @@ class ResultsAggregator extends Actor {
 
   private def mkStringFromResults: String =
     results
-      .map {
-        case (id, result) =>
-          s"""
-             |{
-             | "id": "$id",
-             | "result": {
-             |   "before": "${result.beforePrediction.`type`}",
-             |   "result": "${result.prediction.fold("")(_.`type`.toString)}",
-             |   "percent": "${result.prediction.fold("")(_.percent.toString)}"
-             | }
-             |}
-          """.stripMargin
-
-      }
+      .map (_.toString )
       .mkString("{ \n  \"data\": [", ",\n", "\n]}")
 
 }

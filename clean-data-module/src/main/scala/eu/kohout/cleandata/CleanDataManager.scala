@@ -5,12 +5,12 @@ import akka.actor.{Actor, ActorRef, Props, Stash}
 import akka.cluster.routing.{ClusterRouterPool, ClusterRouterPoolSettings}
 import akka.cluster.sharding.ShardRegion
 import akka.routing.{Broadcast, SmallestMailboxPool}
+import com.thoughtworks.xstream.XStream
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
 import eu.kohout.cleandata.CleanDataManager._
 import eu.kohout.parser.{Email, EmailType}
 import smile.feature.Bag
-import smile.nlp.stemmer.{LancasterStemmer, PorterStemmer, Stemmer}
 
 object CleanDataManager {
   val name: String = "CleanData"
@@ -33,7 +33,7 @@ object CleanDataManager {
     val stemmer = "stemmer"
     val stopWords = "stop-words"
     val symspellDictionary = "symspell-dictionary"
-
+    val concatenateChars = "concatenate-chars"
   }
 
   case class TrainData(email: Email) extends CleanDataManagerMessages
@@ -44,11 +44,10 @@ object CleanDataManager {
   case class CleansedData(
     id: String,
     data: Seq[(String, Int)],
-    `type`: EmailType,
-    htlmTags: Map[String, Int])
+    `type`: EmailType)
       extends CleanDataManagerMessages
 
-  case class ShareBag(bag: Bag[String]) extends CleanDataManagerMessages
+  case class ShareBag(bag: String) extends CleanDataManagerMessages
 
   case object GetBag extends CleanDataManagerMessages
 
@@ -66,14 +65,9 @@ class CleanDataManager(
   private val log = Logger(self.path.toStringWithoutAddress)
 
   private var bag: Bag[String] = _
+  private val xStream = new XStream
 
-  private val symspell = {
-    val symSpell = new SymSpell(-1, 3, -1, 1)
-    symSpell.loadDictionary(config.getString(Configuration.symspellDictionary), 0, 1)
-    symSpell
-  }
-
-  private val workers: ActorRef = createWorkers(symspell)
+  private val workers: ActorRef = createWorkers
 
   private def withDictionary: Receive = {
     case message: PredictionData =>
@@ -86,7 +80,7 @@ class CleanDataManager(
       workers.!(msg)(sender())
 
     case GetBag =>
-      sender() ! ShareBag(bag)
+      sender() ! ShareBag(xStream.toXML(bag))
 
     case Done => throw new Exception ("Reseting actor")
 
@@ -107,7 +101,7 @@ class CleanDataManager(
       workers.!(msg)(sender())
 
     case msg: ShareBag =>
-      bag = msg.bag
+      bag = xStream.fromXML(msg.bag).asInstanceOf[Bag[String]]
       workers ! Broadcast(msg)
       context.become(withDictionary)
 
@@ -120,7 +114,7 @@ class CleanDataManager(
 
   }
 
-  private def createWorkers(symspell: SymSpell): ActorRef = {
+  private def createWorkers: ActorRef = {
     val numberOfWorkers = config.getInt(Configuration.numberOfWorkersPath)
     require(numberOfWorkers > 0, "At least one worker for cleaning data must be created!")
 
@@ -140,11 +134,9 @@ class CleanDataManager(
       ).props(
           CleanDataWorker
             .props(
-              symspell = symspell,
               modelManager = modelManager,
               stopWords = config.getString(Configuration.stopWords),
               config = config,
-              stemmer = _ => createStemmer(config.getString(Configuration.stemmer))
             )
             .withDispatcher("clean-dispatcher")
         )
@@ -153,15 +145,6 @@ class CleanDataManager(
     )
 
     workers
-  }
-
-  private def createStemmer: String => Stemmer = {
-    case "PORTER"    => new PorterStemmer
-    case "LANCASTER" => new LancasterStemmer
-    case other =>
-      throw new IllegalStateException(
-        s"$other is currently not supportet stemmer. Use 'LANCASTER' or 'PORTER' stemmer."
-      )
   }
 
 }

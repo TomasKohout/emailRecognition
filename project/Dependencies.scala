@@ -17,6 +17,7 @@ object Versions {
   val jclOverSlf4j = "1.7.21"
   val commonsLoggingEmpty = "99-empty"
   val enumeratum = "1.5.13"
+  val jsoup = "1.11.3"
 }
 
 object Dependencies {
@@ -38,7 +39,8 @@ object Dependencies {
   lazy val akkaHttpCirce = "de.heikoseeberger" %% "akka-http-circe" % Versions.heikoseebergCirce
   lazy val jclOverSlf4j = "org.slf4j" % "jcl-over-slf4j" % Versions.jclOverSlf4j
   lazy val commonsLoggingEmpty = "commons-logging" % "commons-logging" % Versions.commonsLoggingEmpty
-  lazy val symspell = "org.lundez" % "symspell" % "1.0-SNAPSHOT" from "file://bin/symspell-1.0-SNAPSHOT.jar"
+  lazy val symspell = "org.lundez" % "symspell" % "1.0-SNAPSHOT" from "file://lib/symspell-1.0-SNAPSHOT.jar"
   lazy val enumeratumCirce = "com.beachape" %% "enumeratum-circe" % Versions.enumeratum
   lazy val enumeratum = "com.beachape" %% "enumeratum" % Versions.enumeratum
+  lazy val jsoup =  "org.jsoup" % "jsoup" % Versions.jsoup
 }

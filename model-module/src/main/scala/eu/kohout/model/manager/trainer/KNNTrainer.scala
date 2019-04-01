@@ -1,9 +1,9 @@
-package eu.kohout.model.manager
+package eu.kohout.model.manager.trainer
 
 import akka.actor.{ActorRef, Props}
-import com.typesafe.scalalogging.Logger
 import com.typesafe.config.Config
-import eu.kohout.model.manager.KNNTrainer.Configuration
+import com.typesafe.scalalogging.Logger
+import eu.kohout.model.manager.trainer.KNNTrainer.Configuration
 import eu.kohout.model.manager.traits.Trainer
 import smile.classification.KNN
 
@@ -11,7 +11,9 @@ object KNNTrainer {
   val name: String => String = _ + "Trainer"
 
   object Configuration {
-    val configPah = "knn"
+    val configPath = "knn"
+    val shareAfter: String = "share-model-after"
+    val numberOfPredictors: String = s"$configPath.number-of-predictors"
     val k = "k"
   }
 

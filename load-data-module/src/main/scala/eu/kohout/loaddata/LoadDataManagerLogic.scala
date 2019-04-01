@@ -10,6 +10,7 @@ import eu.kohout.loaddata.LoadDataManagerLogic.Configuration
 import eu.kohout.parser.EmailType
 
 import scala.io.Source
+import scala.util.Random
 
 object LoadDataManagerLogic {
 
@@ -20,34 +21,75 @@ object LoadDataManagerLogic {
     val labelsPath = "labels"
     val trainDataSize = "train-size"
     val splitTo = "split-to"
+    val fromEachGroup = "from-each-group"
   }
 
 }
 
-trait LoadDataManagerLogic extends Actor {
-  val config: Config
-  val cleanDataManager: ActorRef
-  val resultsAggregator: ActorRef
+abstract class LoadDataManagerLogic(config: Config, cleanDataManager: ActorRef, resultsAggregator: ActorRef ) extends Actor {
 
   protected val workers: ActorRef = createWorkers()
 
-  protected val takeAmountForTraining: Int => Int = _ / 100 * config.getInt(Configuration.trainDataSize)
+  protected val takeAmountForTraining: Int => Int = _ / 100 * config.getInt(
+    Configuration.trainDataSize
+  )
+  protected val fromEachGroup: Option[Int] =
+    if (config.hasPath(Configuration.fromEachGroup))
+      Some(config.getInt(Configuration.fromEachGroup))
+    else None
 
   protected def splitTo: Int = config.getInt(Configuration.splitTo)
 
   protected val emailsDir = new File(config.getString(Configuration.dataPath))
-  require(emailsDir.exists && emailsDir.isDirectory, s"Provided path is not a directory. ${emailsDir.getAbsolutePath}")
+  require(
+    emailsDir.exists && emailsDir.isDirectory,
+    s"Provided path is not a directory. ${emailsDir.getAbsolutePath}"
+  )
 
   protected type FileName = String
   protected def log: Logger = Logger(getClass)
 
-  protected var splitedFiles: List[Array[File]]
-  protected val allFiles: Array[File]
-
-  protected var testDataPaths: Array[File] = Array.empty
-
   // map that hold information about type (spam/ham) of email stored in specific file
-  protected var emailTypes: Map[FileName, EmailType] = _
+  protected val emailTypes: Map[FileName, EmailType] = {
+    require(
+      config.hasPath(Configuration.dataPath),
+      s"This `${Configuration.dataPath}` can not be empty."
+    )
+    require(
+      config.hasPath(Configuration.labelsPath),
+      s"This `${Configuration.labelsPath}` can not be empty."
+    )
+
+    val labelsFile = new File(config.getString(Configuration.labelsPath))
+    require(
+      labelsFile.exists && labelsFile.isFile,
+      s"Provided path is not a file. ${Configuration.labelsPath}"
+    )
+
+    createLabelMap(labelsFile)
+  }
+
+  protected var splitedFiles: List[Seq[File]] = {
+    val groupedEmails = emailsDir
+      .listFiles()
+      .toSeq
+      .flatMap(file => emailTypes.get(file.getName).map((_, file)))
+      .groupBy(_._1)
+
+    val hams = Random.shuffle(groupedEmails.getOrElse(EmailType.Ham, Seq.empty).map(_._2))
+    val spams = Random.shuffle(groupedEmails.getOrElse(EmailType.Spam, Seq.empty).map(_._2))
+
+    val hamsShrinked = hams.take(fromEachGroup.getOrElse(hams.length))
+    val spamsShrinked = spams.take(fromEachGroup.getOrElse(spams.length))
+
+    splitForCrossValidation(
+      hamsShrinked ++ spamsShrinked
+    )
+  }
+
+  protected val allFiles: Seq[File] = splitedFiles.flatMap(_.map(identity))
+
+  protected var testDataPaths: Seq[File] = Seq.empty
 
   protected def splitLabelsRow(row: String): Option[(FileName, EmailType)] = {
     val index = row.indexOf(" ")
@@ -76,7 +118,11 @@ trait LoadDataManagerLogic extends Actor {
     context.actorOf(
       ClusterRouterPool(
         RoundRobinPool(numberOfWorkers),
-        ClusterRouterPoolSettings(totalInstances = 100, maxInstancesPerNode = numberOfWorkers, allowLocalRoutees = true)
+        ClusterRouterPoolSettings(
+          totalInstances = 100,
+          maxInstancesPerNode = numberOfWorkers,
+          allowLocalRoutees = true
+        )
       ).props(LoadDataWorker.props(cleanDataManager, resultsAggregator)),
       name = "LoadDataWorker"
     )
@@ -87,37 +133,29 @@ trait LoadDataManagerLogic extends Actor {
       .fromFile(path.getAbsolutePath)
       .getLines
       .toSeq
-      .flatMap(splitLabelsRow)(collection.breakOut[Seq[String], (FileName, EmailType), Map[FileName, EmailType]])
+      .flatMap(splitLabelsRow)(
+        collection.breakOut[Seq[String], (FileName, EmailType), Map[FileName, EmailType]]
+      )
 
-  protected def splitForCrossValidation(files: Array[File]): List[Array[File]] = {
-    val sizeOfPart = files.length / splitTo
+  protected def splitForCrossValidation(files: Seq[File]): List[Seq[File]] = {
+    val sizeOfPart = files.length / splitTo / 2
 
-    log.debug("Size of part {}", sizeOfPart)
     def innerSplit(
-      list: List[Array[File]],
-      filesLeft: Array[File],
+      list: List[Seq[File]],
+      filesLeft: Seq[File],
       soFarSplited: Int
-    ): List[Array[File]] = {
-      val (part, whatsLeft) = filesLeft.splitAt(sizeOfPart)
+    ): List[Seq[File]] = {
 
-      if (splitTo == soFarSplited) part ++ whatsLeft :: list
-      else innerSplit(part :: list, whatsLeft, soFarSplited + 1)
+      val groupedFiles = filesLeft.flatMap(file => emailTypes.get(file.getName).map((_, file))).groupBy(_._1)
+
+      val (hams, hamsLeft) = groupedFiles.getOrElse(EmailType.Ham, Seq.empty).map(_._2).splitAt(sizeOfPart)
+      val (spams, spamsLeft) = groupedFiles.getOrElse(EmailType.Spam, Seq.empty).map(_._2).splitAt(sizeOfPart)
+
+      if (splitTo == soFarSplited) hams ++ spams ++ hamsLeft ++ spamsLeft :: list
+      else innerSplit(hams ++ spams :: list, hamsLeft ++ spamsLeft, soFarSplited + 1)
     }
 
     innerSplit(List.empty, files, 1)
   }
 
-  override def preStart(): Unit = {
-    super.preStart()
-
-    require(config.hasPath(Configuration.dataPath), s"This `${Configuration.dataPath}` can not be empty.")
-    require(config.hasPath(Configuration.labelsPath), s"This `${Configuration.labelsPath}` can not be empty.")
-
-    val labelsFile = new File(config.getString(Configuration.labelsPath))
-    require(labelsFile.exists && labelsFile.isFile, s"Provided path is not a file. ${Configuration.labelsPath}")
-
-    emailTypes = createLabelMap(labelsFile)
-    log.debug("Label map size {}", emailTypes.size)
-
-  }
 }

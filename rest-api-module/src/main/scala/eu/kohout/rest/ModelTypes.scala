@@ -3,7 +3,7 @@ import enumeratum._
 
 sealed trait ModelTypes extends EnumEntry
 
-object ModelTypes extends Enum[ModelTypes] with CirceEnum[ModelTypes]{
+case object ModelTypes extends Enum[ModelTypes] with CirceEnum[ModelTypes]{
 
   val values = findValues
 
@@ -11,16 +11,20 @@ object ModelTypes extends Enum[ModelTypes] with CirceEnum[ModelTypes]{
 
   case object NaiveBayes extends ModelTypes
 
+  case object AdaBoost extends ModelTypes
+
   def fromString: String => ModelTypes = {
     case x if x.toLowerCase() == "svm" => SVM
     case x if x.toLowerCase() == "naivebayes" => NaiveBayes
+    case x if x.toLowerCase() == "adaboost" => AdaBoost
     case other =>
       throw new IllegalStateException(s"$other is not a valid model type")
   }
 
   def apply: String => ModelTypes = {
-    case "SVM"        => SVM
-    case "NaiveBayes" => NaiveBayes
+    case x if x.toLowerCase() == "svm" => SVM
+    case x if x.toLowerCase() == "naivebayes" => NaiveBayes
+    case x if x.toLowerCase() == "adaboost" => AdaBoost
     case other =>
       throw new IllegalStateException(s"$other is not a valid model type")
   }

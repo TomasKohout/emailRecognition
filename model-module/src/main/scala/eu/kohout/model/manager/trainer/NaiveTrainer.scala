@@ -1,14 +1,42 @@
-package eu.kohout.model.manager
-import akka.actor.ActorRef
+package eu.kohout.model.manager.trainer
+
+import akka.actor.{ActorRef, Props}
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
-import eu.kohout.model.manager.ModelManager.Configuration
+import eu.kohout.model.manager.trainer.NaiveTrainer.Configuration
 import eu.kohout.model.manager.traits.Trainer
 import smile.classification.NaiveBayes
 
+object NaiveTrainer {
+  val name: String = "NaiveBayes"
+
+  object Configuration {
+    val configPath: String = "naive-bayes"
+    val shareAfter: String = "share-model-after"
+    val numberOfPredictors: String = s"$configPath.number-of-predictors"
+    val model = "model"
+    val sigma = "sigma"
+  }
+
+  def props(
+    config: Config,
+    featureSize: Int,
+    predictors: ActorRef,
+    writeModelTo: String
+  ): Props =
+    Props(
+      new NaiveTrainer(
+        config = config,
+        featureSize = featureSize,
+        predictors = predictors,
+        writeModelTo = writeModelTo
+      )
+    )
+}
+
 class NaiveTrainer(
   config: Config,
-  fetureSize: Int,
+  featureSize: Int,
   val predictors: ActorRef,
   val writeModelTo: String)
     extends Trainer[NaiveBayes] {
@@ -26,20 +54,20 @@ class NaiveTrainer(
 
   override def trainModel: (
     Array[Array[Double]],
-      Array[Int]
-    ) => NaiveBayes = { (x, y) =>
+    Array[Int]
+  ) => NaiveBayes = { (x, y) =>
     val model = new NaiveBayes(
       chooseModel(
         config
           .getString(
-            Configuration.NaiveBayes.model
+            Configuration.model
           )
       ),
       2,
-      fetureSize,
+      featureSize,
       config
         .getDouble(
-          Configuration.NaiveBayes.sigma
+          Configuration.sigma
         )
     )
     model.learn(x, y)

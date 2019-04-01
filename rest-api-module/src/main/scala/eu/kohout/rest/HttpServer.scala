@@ -44,7 +44,7 @@ class HttpServer(
 
   private val routes: Route = {
     post {
-      path("email-recognition") {
+      path("predictions" / "!predict") {
         extractExecutionContext { implicit ec =>
           entity(as[EmailRecognitionRequest]) { email =>
             val response = httpServerHandler
@@ -70,7 +70,7 @@ class HttpServer(
       }
     } ~
       get {
-        path("application" / "!crossValidation") {
+        path("controls" / "!crossValidation") {
           extractExecutionContext { implicit ec =>
             val response = httpServerHandler
               .crossValidation()
@@ -83,7 +83,7 @@ class HttpServer(
         }
       } ~
       get {
-        path("application" / "!trainModels") {
+        path("controls" / "!trainModels") {
           extractExecutionContext { implicit ec =>
             val response = httpServerHandler
               .trainModels()
@@ -96,10 +96,10 @@ class HttpServer(
         }
       } ~
       get {
-        path("application" / "!killActors") {
+        path("controls" / "!restart") {
           extractExecutionContext { implicit ec =>
             val response = httpServerHandler
-              .killActors()
+              .restart()
               .flatMap(_ => Marshal(Json.obj()).to[ResponseEntity])
 
             onSuccess(response) { responseEntity =>
@@ -109,23 +109,23 @@ class HttpServer(
         }
       } ~
       get {
-        path("application" / "!startActors") {
-          extractExecutionContext { implicit ec =>
-            val response = httpServerHandler
-              .startActors()
-              .flatMap(_ => Marshal(Json.obj()).to[ResponseEntity])
-
-            onSuccess(response) { responseEntity =>
-              complete(HttpResponse(entity = responseEntity))
-            }
-          }
-        }
-      } ~
-      get {
-        path("application" / "!terminate") {
+        path("controls" / "!terminate") {
           extractExecutionContext { implicit ec =>
             val response = httpServerHandler
               .terminate()
+              .flatMap(_ => Marshal(Json.obj()).to[ResponseEntity])
+
+            onSuccess(response) { responseEntity =>
+              complete(HttpResponse(entity = responseEntity))
+            }
+          }
+        }
+      }~
+      get {
+        path("controls" / "!start") {
+          extractExecutionContext { implicit ec =>
+            val response = httpServerHandler
+              .start()
               .flatMap(_ => Marshal(Json.obj()).to[ResponseEntity])
 
             onSuccess(response) { responseEntity =>
@@ -137,5 +137,5 @@ class HttpServer(
 
   }
 
-  private var bindingFuture: Future[ServerBinding] = Http().bindAndHandle(routes, address, port)
+  def start: Future[ServerBinding] = Http().bindAndHandle(routes, address, port)
 }

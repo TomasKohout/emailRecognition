@@ -10,13 +10,11 @@ import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
 import ModelMessages._
 import akka.Done
-import akka.cluster.sharding.ShardRegion
-import eu.kohout.aggregator.{Model, ModelType, ResultsAggregator}
+import eu.kohout.aggregator.{Model, ModelType}
 import eu.kohout.aggregator.ResultsAggregator.AfterPrediction
-import eu.kohout.model.manager.ModelManager.Configuration
+import eu.kohout.model.manager.predictor.GenericPredictor
+import eu.kohout.model.manager.trainer.{AdaBoostTrainer, NaiveTrainer, SVMTrainer}
 import eu.kohout.parser.EmailType.{Ham, Spam}
-import smile.classification.{NaiveBayes, SVM}
-import smile.math.kernel.{GaussianKernel, LinearKernel, MercerKernel}
 
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
@@ -26,34 +24,7 @@ object ModelManager {
 
   object Configuration {
     val configPath = "model"
-
-    trait GenericConfig {
-      protected def configPath: String
-      def shareAfter: String = "share-model-after"
-      def numberOfPredictors: String = s"$configPath.number-of-predictors"
-      def sigma: String = s"$configPath.sigma"
-    }
-
-    object NaiveBayes extends GenericConfig {
-      val name = "NaiveBayes"
-      override val configPath: String = "naive-bayes"
-      val model = s"$configPath.model"
-    }
-
-    object SVM extends GenericConfig {
-      val name = "svm"
-      override val configPath: String = "svm"
-      val kernel = s"$configPath.kernel"
-    }
-
   }
-
-  val idExtractor: ShardRegion.ExtractEntityId = {
-    case msg => (name, msg)
-  }
-
-  val shardResolver: ShardRegion.ExtractShardId =
-    _ => (math.abs(name.hashCode) % 100).toString
 
   private def apply(
     config: Config,
@@ -79,32 +50,45 @@ class ModelManager(
   implicit private val timeout: Timeout = 5 seconds
   implicit private val ec: ExecutionContext = context.dispatcher
 
-  private val defaultTrainModels = Seq(ModelType.NaiveBayes, ModelType.SVM)
+  private val defaultTrainModels = Seq(ModelType.NaiveBayes, ModelType.AdaBoost)
   private var htmlEvaluator: ActorRef = _
 
   private var scheduledMessage: Option[Cancellable] = None
 
   private val naiveRoutees: ActorRef =
     createPredictors(
-      config.getInt(Configuration.NaiveBayes.numberOfPredictors),
-      Configuration.NaiveBayes.name
+      config.getInt(NaiveTrainer.Configuration.numberOfPredictors),
+      NaiveTrainer.name
     )
 
   private val svmRoutees: ActorRef =
-    createPredictors(config.getInt(Configuration.SVM.numberOfPredictors), Configuration.SVM.name)
+    createPredictors(config.getInt(SVMTrainer.Configuration.numberOfPredictors), SVMTrainer.name)
 
   private var naiveTrainer: ActorRef = _
 
   private val svmTrainer: ActorRef = startTrainer(
-    props = GenericTrainer.props(
-      model = _ => {
-        new SVM[Array[Double]](chooseKernel(config.getString(Configuration.SVM.kernel)), 1.0, 2)
-      },
+    props = SVMTrainer.props(
+      config = config.getConfig(SVMTrainer.Configuration.configPath),
       predictors = svmRoutees,
       writeModelTo = config.getString("write-model-to")
     ),
     specificConfig = config.getConfig("svm.trainer"),
-    name = "SVMTrainer"
+    name = SVMTrainer.name + "Trainer"
+  )
+
+  private val adaBoostPredictors = createPredictors(
+    config.getInt(AdaBoostTrainer.Configuration.numberOfPredictors),
+    AdaBoostTrainer.name
+  )
+
+  private val adaBoostTrainer: ActorRef = startTrainer(
+    props = AdaBoostTrainer.props(
+      config.getConfig(AdaBoostTrainer.Configuration.configPath),
+      adaBoostPredictors,
+      config.getString("write-model-to")
+    ),
+    specificConfig = config.getConfig(AdaBoostTrainer.Configuration.configPath + ".trainer"),
+    AdaBoostTrainer.name + "Trainer"
   )
 
   private def trainModels(message: TrainData): Future[Unit] =
@@ -114,7 +98,9 @@ class ModelManager(
           svmTrainer.ask(message)(timeout = 10 minutes)
         case ModelType.NaiveBayes =>
           naiveTrainer.ask(message)(timeout = 10 minutes)
-      }) map (_ => rootActor ! ModelMessages.Trained) map (_ => self ! SwitchToPrediction)
+        case ModelType.AdaBoost =>
+          adaBoostTrainer.ask(message)(timeout = 10 minutes)
+      }) map (_ => self ! SwitchToPrediction)
 
   private def receivePredict(
     message: Predict,
@@ -126,33 +112,56 @@ class ModelManager(
           result
       }
 
-    val svmPredict = (svmRoutees ? message.data)
-      .map {
-        case result: PredictResult =>
-          result
-      }
+//    val svmPredict = (svmRoutees ? message.data)
+//      .map {
+//        case result: PredictResult =>
+//          result
+//      }
+
+    val adaPredict = (adaBoostPredictors ? message.data) map {
+      case result: PredictResult => result
+    }
 
     for {
       naiveResult <- naivePredict
-      svmResult <- svmPredict
+//      svmResult <- svmPredict
+      adaResult <- adaPredict
       resultModels = List(
         Model(
           naiveResult.result,
           ModelType.NaiveBayes
         ),
+//        Model(
+//          svmResult.result,
+//          ModelType.SVM
+//        ),
         Model(
-          svmResult.result,
-          ModelType.SVM
+          adaResult.result,
+          ModelType.AdaBoost
         )
       )
-      typeOfEmail = if (naiveResult.result == 1 && svmResult.result == -1) Ham
-      else if (naiveResult.result == -1 && svmResult.result == 1) Ham
-      else if (naiveResult.result == 1 && svmResult.result == 1) Ham
-      else Spam
-      percent = svmResult.result + naiveResult.result
+      prediction = List(naiveResult.result, adaResult.result) //, svmResult.result)
+        .groupBy(identity)
+        .filter(data => data._1 == 1 || data._1 == 0)
+        .reduceLeft(
+          (x, y) =>
+            if (x._1 == 1) {
+              if (x._2.size >= y._2.size) x
+              else y
+            } else {
+              if (y._2.size >= x._2.size) x
+              else y
+            }
+        )
+        ._1
+      typeOfEmail = if (prediction == 1) Ham else Spam
+
+      percent = prediction
+
       result = AfterPrediction(
         id = message.data.id,
-        `type` = typeOfEmail,
+        realType = message.data.`type`,
+        predictedType = typeOfEmail,
         percent = percent,
         models = resultModels
       )
@@ -167,7 +176,7 @@ class ModelManager(
     receiver: ActorRef,
     modelMessages: ModelMessages
   ): Option[Cancellable] =
-    cancellable.flatMap{ cancellable =>
+    cancellable.flatMap { cancellable =>
       cancellable.cancel()
       Some(context.system.scheduler.scheduleOnce(30 seconds, receiver, modelMessages))
     }
@@ -175,32 +184,39 @@ class ModelManager(
   private var trainData: Seq[CleansedEmail] = Seq.empty
 
   private def writeAndForgot(): Unit = {
-    svmTrainer ! WriteModels
+//    svmTrainer ! WriteModels
     naiveTrainer ! WriteModels
-    svmTrainer ! ForgotModel
+    adaBoostTrainer ! WriteModels
+//    svmTrainer ! ForgotModel
     naiveTrainer ! ForgotModel
+    adaBoostTrainer ! ForgotModel
     naiveRoutees ! Broadcast(ForgotModel)
-    svmRoutees ! Broadcast(ForgotModel)
+//    svmRoutees ! Broadcast(ForgotModel)
+    adaBoostPredictors ! Broadcast(ForgotModel)
   }
 
   private def predictState: Receive = {
     case SetShiftMessage =>
-      scheduledMessage = Some(context.system.scheduler.scheduleOnce(30 seconds, rootActor, ModelMessages.LastPredictionMade))
+      scheduledMessage = Some(
+        context.system.scheduler
+          .scheduleOnce(30 seconds, rootActor, ModelMessages.LastPredictionMade)
+      )
 
     case WriteModels =>
       writeAndForgot()
       context.become(trainState)
       scheduledMessage = None
-      log.info("Going to train state, completely forgot all.")
+      log.info("Going to train state, completely forgot everything.")
 
     case message: Predict =>
       val replyTo = sender()
       log.debug("Prediction for id {}", message.data.id)
       receivePredict(message, replyTo)
 
-      scheduledMessage = shiftScheduledMessage(scheduledMessage, rootActor, ModelMessages.LastPredictionMade)
+      scheduledMessage =
+        shiftScheduledMessage(scheduledMessage, rootActor, ModelMessages.LastPredictionMade)
 
-    case Done => throw new Exception ("Reseting actor")
+    case Done => throw new Exception("Reseting actor")
 
     case other =>
       log.warn("Prediction state")
@@ -212,17 +228,20 @@ class ModelManager(
     case SwitchToPrediction =>
       log.info("Going to predictState")
       context.become(predictState)
+      rootActor ! Trained
 
-    case Done => throw new Exception ("Reseting actor")
+    case Done => throw new Exception("Reseting actor")
 
     case other =>
-      log.warn("Shift state")
-      log.warn(s"$other message")
+      log.warn(s"Shift state $other")
+
   }
 
   private def trainState: Receive = {
     case SetShiftMessage =>
-      scheduledMessage = Some(context.system.scheduler.scheduleOnce(1 minute, self, ModelMessages.TrainModels))
+      scheduledMessage = Some(
+        context.system.scheduler.scheduleOnce(1 minute, self, ModelMessages.TrainModels)
+      )
 
     case message: Train =>
       trainData = trainData :+ message.data
@@ -236,11 +255,10 @@ class ModelManager(
       context.become(shiftState)
       ()
 
-    case Done => throw new Exception ("Reseting actor")
+    case Done => throw new Exception("Reseting actor")
 
     case other =>
-      log.warn("Train state")
-      log.warn(s"$other message")
+      log.warn(s"Train state $other")
   }
 
   override def receive: Receive = startingState
@@ -248,24 +266,10 @@ class ModelManager(
   private def startingState: Receive = {
     case msg: FeatureSizeForBayes =>
       naiveTrainer = startTrainer(
-        props = GenericTrainer
+        props = NaiveTrainer
           .props(
-            model = _ => {
-              new NaiveBayes(
-                chooseModel(
-                  config
-                    .getString(
-                      Configuration.NaiveBayes.model
-                    )
-                ),
-                2,
-                msg.size,
-                config
-                  .getDouble(
-                    Configuration.NaiveBayes.sigma
-                  )
-              )
-            },
+            config = config.getConfig(NaiveTrainer.Configuration.configPath),
+            featureSize = msg.size,
             predictors = naiveRoutees,
             writeModelTo = config.getString("write-model-to")
           ),
@@ -277,8 +281,8 @@ class ModelManager(
       context.become(trainState)
 
     case other =>
-      log.warn("Starting state")
-      log.warn(s"$other message")
+      log.warn(s"Starting state $other")
+
   }
 
   def startTrainer(
@@ -326,18 +330,4 @@ class ModelManager(
     )
   }
 
-  def chooseModel: String => NaiveBayes.Model = {
-    case "MULTINOMIAL" => NaiveBayes.Model.MULTINOMIAL
-    case "BERNOULLI"   => NaiveBayes.Model.BERNOULLI
-    case "POLYAURN"    => NaiveBayes.Model.POLYAURN
-    case other =>
-      throw new IllegalStateException(s"$other model is currently not supported!")
-  }
-
-  def chooseKernel: String => MercerKernel[Array[Double]] = {
-    case "GAUSSIAN" => new GaussianKernel(config.getDouble(Configuration.SVM.sigma))
-    case "LINEAR"   => new LinearKernel
-    case other =>
-      throw new IllegalStateException(s"$other kernel is not supported for now!")
-  }
 }

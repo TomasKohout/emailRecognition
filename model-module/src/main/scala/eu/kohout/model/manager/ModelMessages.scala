@@ -1,6 +1,4 @@
 package eu.kohout.model.manager
-import akka.actor.ActorRef
-import eu.kohout.aggregator.ModelType
 import eu.kohout.parser.EmailType
 import smile.math.SparseArray
 
@@ -33,8 +31,7 @@ object ModelMessages {
   case class CleansedEmail(
     id: String,
     data: Array[Double],
-    `type`: EmailType,
-    htmlTags: Map[String, Int])
+    `type`: EmailType)
 
   case class Train(data: CleansedEmail) extends ModelMessages
 

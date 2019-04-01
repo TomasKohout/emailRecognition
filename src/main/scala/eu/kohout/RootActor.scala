@@ -1,10 +1,13 @@
 package eu.kohout
 
 import akka.Done
-import akka.actor.{Actor, ActorContext, ActorRef, ActorSystem, PoisonPill, Props, Stash}
-import akka.cluster.sharding.ShardRegion.{ExtractEntityId, ExtractShardId}
-import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings}
-import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
+import akka.actor.{Actor, ActorContext, ActorRef, PoisonPill, Props, Stash}
+import akka.cluster.singleton.{
+  ClusterSingletonManager,
+  ClusterSingletonManagerSettings,
+  ClusterSingletonProxy,
+  ClusterSingletonProxySettings
+}
 import com.thoughtworks.xstream.XStream
 import com.typesafe.config.{Config, ConfigFactory}
 import com.typesafe.scalalogging.Logger
@@ -15,11 +18,9 @@ import eu.kohout.dictionary.DictionaryResolver
 import eu.kohout.loaddata.{LoadDataManager, LoadDataManagerLogic}
 import eu.kohout.model.manager.{ModelManager, ModelMessages}
 import eu.kohout.rest.HttpMessages
-import eu.kohout.rest.{HttpServer, HttpServerHandler}
 import smile.feature.Bag
 
 import scala.concurrent.ExecutionContext
-import scala.concurrent.duration._
 
 object RootActor {
   val name = "RootActor"
@@ -91,6 +92,7 @@ object RootActor {
 
   case object StartCrossValidation extends RootActorMessage
   case object StartApplication extends RootActorMessage
+  case object TrainModel extends RootActorMessage
 
   sealed trait RootActorMessage
 
@@ -129,7 +131,8 @@ class RootActor extends Actor with Stash {
             ),
           selfProxy,
           resultsAggregator
-        ).withDispatcher("model-dispatcher"),
+        )
+        .withDispatcher("model-dispatcher"),
       name = ModelManager.name
     )
 
@@ -167,8 +170,6 @@ class RootActor extends Actor with Stash {
     name = DictionaryResolver.name
   )
 
-  val httpServer = new HttpServer(config, new HttpServerHandler(cleanDataManager, selfProxy, resultsAggregator)(5 seconds))(context.system)
-
   override def receive: Receive = startApplication
 
   implicit val ec: ExecutionContext = context.dispatcher
@@ -176,13 +177,10 @@ class RootActor extends Actor with Stash {
   private var bag: Option[Bag[String]] = None
   private var bayesSize: Option[Int] = None
   private val xStream = new XStream
+  private var trained = false
 
   private def startApplication: Receive = {
     case HttpMessages.RootActor.StartApplication =>
-      log.info("Starting application")
-      dictionaryResolver ! DictionaryResolver.ResolveDictionary
-
-    case RootActor.StartApplication =>
       log.info("Starting application")
       dictionaryResolver ! DictionaryResolver.ResolveDictionary
 
@@ -204,7 +202,7 @@ class RootActor extends Actor with Stash {
   }
 
   private def crossValidation: Receive = {
-    case HttpMessages.RootActor.StartCrossValidation =>
+    case RootActor.StartCrossValidation =>
       log.info("Starting cross validation")
 
       loadDataManager ! LoadDataManager.StartCrossValidation
@@ -227,11 +225,17 @@ class RootActor extends Actor with Stash {
 
       context.become(waitingForOrders)
 
+    case HttpMessages.RootActor.PredictionData(_) =>
+      sender() ! HttpMessages.RootActor.NotTrained
+
     case other =>
       log.warn("Unsupported message received {}", other)
   }
 
   private def waitingForOrders: Receive = {
+    case HttpMessages.RootActor.PredictionData(email) =>
+      if (trained) cleanDataManager.!(CleanDataManager.PredictionData(email))(sender())
+      else sender() ! HttpMessages.RootActor.NotTrained
     case HttpMessages.RootActor.RestartActors =>
       resultsAggregator ! Done
       dictionaryResolver ! Done
@@ -239,17 +243,22 @@ class RootActor extends Actor with Stash {
       cleanDataManager ! Done
       modelManager ! Done
 
-      cleanDataManager ! CleanDataManager.ShareBag(bag.map(xStream.toXML).getOrElse(throw new Exception("Does not have a bag!")))
-      modelManager ! ModelMessages.FeatureSizeForBayes(bayesSize.getOrElse(throw new Exception("Does not have a bayes size!")))
+      cleanDataManager ! CleanDataManager.ShareBag(
+        bag.map(xStream.toXML).getOrElse(throw new Exception("Does not have a bag!"))
+      )
+      modelManager ! ModelMessages.FeatureSizeForBayes(
+        bayesSize.getOrElse(throw new Exception("Does not have a bayes size!"))
+      )
       loadDataManager ! LoadDataManager.DictionaryExists
+      trained = false
 
     case HttpMessages.RootActor.StartCrossValidation =>
       context.become(crossValidation)
-      self ! HttpMessages.RootActor.StartCrossValidation
+      self ! RootActor.StartCrossValidation
 
     case HttpMessages.RootActor.TrainModel =>
       context.become(trainModels)
-      self ! HttpMessages.RootActor.TrainModel
+      self ! RootActor.TrainModel
 
     case HttpMessages.RootActor.Terminate =>
       log.info("Terminating actor system, bye.")
@@ -262,9 +271,8 @@ class RootActor extends Actor with Stash {
   }
 
   private def trainModels: Receive = {
-    case HttpMessages.RootActor.TrainModel =>
+    case RootActor.TrainModel =>
       log.info("Beginning the process of training model")
-
 
       modelManager ! ModelMessages.WriteModels
       loadDataManager ! LoadDataManager.LoadTrainData
@@ -272,7 +280,11 @@ class RootActor extends Actor with Stash {
 
     case ModelMessages.Trained =>
       log.info("Models trained, becoming waitingForOrders")
+      trained = true
       context.become(waitingForOrders)
+
+    case HttpMessages.RootActor.PredictionData(_) =>
+      sender() ! HttpMessages.RootActor.NotTrained
 
     case other =>
       log.warn("Unsupported message received {}", other)

@@ -1,4 +1,5 @@
 package eu.kohout.rest
+import eu.kohout.parser.Email
 
 object HttpMessages {
 
@@ -8,6 +9,9 @@ object HttpMessages {
     case object RestartActors
     case object StartActors
     case object Terminate
+    case object StartApplication
+    case class PredictionData(email: Email)
+    case object NotTrained
   }
   case class EmailRecognitionRequest(text: String) extends HttpMessage
 

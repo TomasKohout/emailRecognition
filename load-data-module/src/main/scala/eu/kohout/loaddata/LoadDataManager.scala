@@ -55,22 +55,15 @@ class LoadDataManager(
   val config: Config,
   val cleanDataManager: ActorRef,
   val resultsAggregator: ActorRef,
-  rootActor: ActorRef)
-    extends Actor
-    with LoadDataManagerLogic {
+  val rootActor: ActorRef)
+    extends LoadDataManagerLogic(config = config, cleanDataManager = cleanDataManager, resultsAggregator = resultsAggregator) {
   import LoadDataManager._
 
   override protected val log: Logger = Logger(self.path.toStringWithoutAddress)
 
-  override protected var splitedFiles: List[Array[File]] = splitForCrossValidation(
-    emailsDir.listFiles()
-  )
-
-  override protected val allFiles: Array[File] = splitedFiles.flatMap(_.map(identity)).toArray
-
   implicit private val ec: ExecutionContext = context.dispatcher
 
-  private def loadTrainData: Receive = {
+  private def waitingForOrders: Receive = {
     case LoadTrainData =>
       val grouped = emailTypes
         .groupBy(_._2)
@@ -96,19 +89,7 @@ class LoadDataManager(
       log.info("Train data size is {}", data.length)
 
       sendLoadedFiles(data, LoadDataWorker.LoadTrainData)
-      context.become(waitingForOrders)
 
-    case Done => throw new Exception ("Reseting actor")
-
-    case other =>
-      log.debug("unknown message received {}", other)
-  }
-
-  private def waitingForOrders: Receive = {
-    case LoadTrainData =>
-      log.info("Switching to loading train data")
-      context.become(loadTrainData)
-      self ! LoadTrainData
     case StartCrossValidation =>
       log.info("Starting cross validation")
       context.become(crossValidation)
@@ -127,7 +108,7 @@ class LoadDataManager(
       val testFiles = splitedFiles match {
         case Nil =>
           log.info("Cross validation has been completely done.")
-          Array.empty[File]
+          Seq.empty[File]
         case x :: Nil =>
           splitedFiles = Nil
           x
@@ -156,7 +137,7 @@ class LoadDataManager(
       }
     case ContinueCrossValidation =>
       sendLoadedFiles(testDataPaths, LoadDataWorker.LoadPredictionData)
-      testDataPaths = Array.empty
+      testDataPaths = Seq.empty
 
     case Done => throw new Exception ("Reseting actor")
 
@@ -189,7 +170,7 @@ class LoadDataManager(
   override def receive: Receive = creationOfDictionary
 
   def sendLoadedFiles(
-    files: Array[File],
+    files: Seq[File],
     message: (File, EmailType) => LoadDataWorkerMessage
   ): Unit =
     files

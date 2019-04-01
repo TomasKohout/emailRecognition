@@ -1,17 +1,19 @@
-package eu.kohout.model.manager
+package eu.kohout.model.manager.trainer
 
 import akka.actor.{ActorRef, Props}
-import com.typesafe.scalalogging.Logger
 import com.typesafe.config.Config
-import eu.kohout.model.manager.AdaBoostTrainer.Configuration
+import com.typesafe.scalalogging.Logger
+import eu.kohout.model.manager.trainer.AdaBoostTrainer.Configuration
 import eu.kohout.model.manager.traits.Trainer
 import smile.classification.AdaBoost
 
 object AdaBoostTrainer {
-  val name: String => String = _ + "Trainer"
+  val name: String = "AdaBoost"
 
-  object Configuration {
-    val configPah = "knnConfig"
+  object Configuration  {
+    val configPath = "adaboost"
+    val shareAfter: String = "share-model-after"
+    val numberOfPredictors: String = s"$configPath.number-of-predictors"
     val ntrees = "number-of-trees"
     val maxNodes = "max-nodes"
   }

@@ -1,5 +1,5 @@
 package eu.kohout.parser
-import java.io.{ByteArrayInputStream, FileInputStream, InputStream}
+import java.io.{ByteArrayInputStream, File, FileInputStream, InputStream}
 import java.time.Instant
 import java.util.{Scanner, UUID}
 
@@ -23,13 +23,14 @@ object EmailParser {
   implicit private def toOption[T](what: T): Option[T] = Option(what)
 
   private val MessageId = "Message-ID"
+  private val Subject = "Subject"
 
   def parseFromFile(
-    path: String,
+    file: File,
     emailType: EmailType
   ): Email = {
-    log.debug("Parsing email path: {}", path)
-    val fis = new FileInputStream(path)
+    log.debug("Parsing email path: {}", file)
+    val fis = new FileInputStream(file)
     parse(fis, emailType)
   }
 
@@ -54,8 +55,10 @@ object EmailParser {
     val email = Option(contentHandler.getEmail)
 
     log.debug("Email parsed {}", email.isDefined)
+    val subject = email.flatMap(_.getHeader).flatMap(_.getField(Subject)).flatMap(_.getBody).getOrElse("")
+
     val htmlBody: Option[String] = email.flatMap(_.getHTMLEmailBody).flatMap(_.getIs)
-    val plainBody: Option[String] = email.flatMap(_.getPlainTextEmailBody).flatMap(_.getIs)
+    val plainBody: Option[String] = email.flatMap(_.getPlainTextEmailBody).flatMap(_.getIs).fold(subject)(subject + "\n" + _ )
 
     val parts = htmlBody.fold(Seq.empty[BodyPart])(part => Seq(BodyPart(HTML, part))) ++
       plainBody.fold(Seq.empty[BodyPart])(part => Seq(BodyPart(PLAIN, part)))

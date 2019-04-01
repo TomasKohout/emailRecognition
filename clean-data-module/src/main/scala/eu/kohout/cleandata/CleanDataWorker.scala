@@ -3,14 +3,16 @@ package eu.kohout.cleandata
 import SymSpell.SymSpell
 import akka.actor.{Actor, ActorRef, Props, Stash}
 import akka.util.Timeout
+import com.thoughtworks.xstream.XStream
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
 import eu.kohout.cleandata.CleanDataManager._
 import eu.kohout.model.manager.ModelMessages
 import eu.kohout.parser.BodyType.{HTML, PLAIN}
 import eu.kohout.parser.Email
+import org.jsoup.Jsoup
 import smile.feature.Bag
-import smile.nlp.stemmer.{PorterStemmer, Stemmer}
+import smile.nlp.stemmer.{LancasterStemmer, PorterStemmer, Stemmer}
 import smile.nlp._
 
 import scala.concurrent.duration._
@@ -20,29 +22,44 @@ import collection.JavaConverters._
 object CleanDataWorker {
   val workerName = "CleanDataWorker"
 
-  object Configuration {}
-
   def props(
-    symspell: SymSpell,
     modelManager: ActorRef,
     stopWords: String,
-    stemmer: Unit => Stemmer = _ => new PorterStemmer,
     config: Config
   ): Props =
-    Props(new CleanDataWorker(symspell, modelManager, Some(stopWords), stemmer(()), config))
+    Props(new CleanDataWorker(modelManager, Some(stopWords), config))
 
 }
 
 class CleanDataWorker(
-  symspell: SymSpell,
   modelManager: ActorRef,
   stopWords: Option[String],
-  stemmer: Stemmer,
   config: Config)
     extends Actor
     with Stash {
 
-  implicit val timout: Timeout = 5 seconds
+  private def createStemmer: String => Stemmer = {
+    case "PORTER"    => new PorterStemmer
+    case "LANCASTER" => new LancasterStemmer
+    case other =>
+      throw new IllegalStateException(
+        s"$other is currently not supportet stemmer. Use 'LANCASTER' or 'PORTER' stemmer."
+      )
+  }
+
+  private val stemmer = createStemmer(config.getString(Configuration.stemmer))
+
+  private val symspell = {
+    val symSpell = new SymSpell(-1, 3, -1, 1)
+    symSpell.loadDictionary(config.getString(Configuration.symspellDictionary), 0, 1)
+    symSpell
+  }
+
+  private val xstream = new XStream
+
+  private val concatenateChars = config.getInt(Configuration.concatenateChars)
+
+  implicit val timeout: Timeout = 5 seconds
 
   private val log = Logger(self.path.toStringWithoutAddress)
   private var bag: Option[Bag[String]] = None
@@ -67,7 +84,7 @@ class CleanDataWorker(
       stash()
 
     case shareBag: ShareBag =>
-      bag = Some(shareBag.bag)
+      bag = Some(xstream.fromXML(shareBag.bag).asInstanceOf[Bag[String]])
       log.info("Becoming withBagOfWords")
       context.become(withBagOfWords)
       unstashAll()
@@ -104,8 +121,7 @@ class CleanDataWorker(
                 .CleansedEmail(
                   id = cleanEmail.id,
                   data = features,
-                  `type` = cleanEmail.`type`,
-                  htmlTags = cleanEmail.htlmTags
+                  `type` = cleanEmail.`type`
                 )
           )
           .fold {
@@ -116,20 +132,17 @@ class CleanDataWorker(
       .recover {
         case ex =>
           log.error("Error occurred when cleaning data.", ex)
-      }.getOrElse(())
+      }
+      .getOrElse(())
 
   private def cleanEmail(email: Email): Try[CleanDataManager.CleansedData] = Try {
-    val (htmlTags, text) = email.bodyParts
+    val text = email.bodyParts
       .map { bodyPart =>
         bodyPart.`type` match {
           case HTML  => cleanHtml(bodyPart.body)
-          case PLAIN => Map.empty -> bodyPart.body
+          case PLAIN => bodyPart.body
         }
-      }
-      .foldLeft(Map.empty[String, Int], "") {
-        case ((resultMap, resultText), (map, text)) =>
-          (resultMap ++ map, resultText + text)
-      }
+      }.reduceLeft(_ + " " + _)
 
     val cleanedText = concatenateSplitWords(text).sentences
       .flatMap(symspell.lookupCompound(_).asScala.map(_.term))
@@ -162,15 +175,14 @@ class CleanDataWorker(
     CleansedData(
       id = email.id,
       data = cleanedText,
-      `type` = email.`type`,
-      htlmTags = htmlTags
+      `type` = email.`type`
     )
   }
 
   private def concatenateSplitWords(str: String): String = {
     val (result, currResult) = str.split(' ').foldLeft("", "") {
       case ((res, curResult), s) =>
-        if (s.length == 1) {
+        if (s.length <= concatenateChars) {
           (res, curResult + s)
         } else {
           (res + " " + curResult + " " + s, "")
@@ -179,58 +191,8 @@ class CleanDataWorker(
     result + " " + currResult
   }
 
-  private def removeHtml(str: String): (Map[String, Int], String) = {
-    val (tags, _, message, _, _, _) =
-      str.foldLeft(List.empty[String], "", "", false, false, false) {
-        case ((listOfTags, tag, text, isInTag, isInSpecial, isHead), char) =>
-          if (isHead) {
-            if (tag.toLowerCase.contains("/head")) {
-              ("head" :: listOfTags, "", text, false, isInSpecial, false)
-            } else {
-              (listOfTags, tag + char, text, isInTag, isInSpecial, isHead)
-            }
-          } else if (char == '<') {
-            (listOfTags, tag, text, true, false, false)
-          } else if (char == '>') {
-            (
-              tag :: listOfTags,
-              "",
-              text + " ",
-              false,
-              false,
-              tag.toLowerCase.contains("head")
-            )
-          } else if (isInTag) {
-            (listOfTags, tag + char, text, isInTag, isInSpecial, isHead)
-          } else if (char == '&') {
-            (listOfTags, "", text + " ", false, true, false)
-          } else if (char == ';') {
-            (listOfTags, "", text + " ", false, false, false)
-          } else if (isInSpecial) {
-            (listOfTags, tag + char, text, isInTag, isInSpecial, isHead)
-          } else {
-            (listOfTags, tag, text + char, isInTag, isInSpecial, isHead)
-          }
-      }
-
-    val resultMap = tags
-      .map { str =>
-        if (str.contains(" ")) {
-          str.substring(0, str.indexOf(" ")).replace("/", "").toLowerCase()
-        } else {
-          str.replace("/", "").toLowerCase()
-        }
-      }
-      .groupBy(identity)
-      .map {
-        case (key, listOfAll) =>
-          (key, listOfAll.size)
-      }(collection.breakOut[Map[String, List[String]], (String, Int), Map[String, Int]])
-
-    (resultMap, message)
-  }
-
-  private def cleanHtml(body: String): (Map[String, Int], String) = removeHtml(body)
+  private def cleanHtml(body: String): String =
+    Jsoup.parse(body).getAllElements.asScala.map(_.text).mkString(" ")
 
   override def postRestart(reason: Throwable): Unit = {
     super.postRestart(reason)
