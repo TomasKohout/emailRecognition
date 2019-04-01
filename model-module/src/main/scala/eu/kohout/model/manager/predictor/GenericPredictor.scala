@@ -44,6 +44,7 @@ class GenericPredictor extends Actor with Predictor {
         result = result,
         `type` = predict.`type`
       )
+
     case ForgotModel =>
       model = None
   }
