@@ -1,21 +1,31 @@
 package eu.kohout.model.manager
 
+import java.util
+
 import akka.actor.{Actor, ActorRef, Cancellable, PoisonPill, Props}
 import akka.cluster.routing.{ClusterRouterPool, ClusterRouterPoolSettings}
-import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
+import akka.cluster.singleton.{
+  ClusterSingletonManager,
+  ClusterSingletonManagerSettings,
+  ClusterSingletonProxy,
+  ClusterSingletonProxySettings
+}
 import akka.pattern.ask
 import akka.routing._
 import akka.util.Timeout
-import com.typesafe.config.Config
+import com.typesafe.config.{Config, ConfigValueType}
 import com.typesafe.scalalogging.Logger
 import ModelMessages._
 import akka.Done
 import eu.kohout.aggregator.{Model, ModelType}
 import eu.kohout.aggregator.ResultsAggregator.AfterPrediction
+import eu.kohout.model.manager.ModelManager.{Actors, Configuration}
 import eu.kohout.model.manager.predictor.GenericPredictor
-import eu.kohout.model.manager.trainer.{AdaBoostTrainer, NaiveTrainer, SVMTrainer}
+import eu.kohout.model.manager.trainer.KNNTrainer.Configuration.configPath
+import eu.kohout.model.manager.trainer.{AdaBoostTrainer, KNNTrainer, NaiveTrainer, SVMTrainer}
 import eu.kohout.parser.EmailType.{Ham, Spam}
 
+import scala.collection.JavaConverters._
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -24,6 +34,8 @@ object ModelManager {
 
   object Configuration {
     val configPath = "model"
+    val models = "models"
+    val numberOfPredictors = "number-of-predictors"
   }
 
   private def apply(
@@ -37,6 +49,12 @@ object ModelManager {
     rootActor: ActorRef,
     resultsAggregator: ActorRef
   ): Props = Props(ModelManager(config, rootActor, resultsAggregator))
+
+  case class Actors(
+    trainer: ActorRef,
+    predictor: ActorRef,
+    weight: Int,
+    modelType: ModelType)
 }
 
 class ModelManager(
@@ -50,126 +68,92 @@ class ModelManager(
   implicit private val timeout: Timeout = 5 seconds
   implicit private val ec: ExecutionContext = context.dispatcher
 
-  private val defaultTrainModels = Seq(ModelType.NaiveBayes, ModelType.AdaBoost)
-  private var htmlEvaluator: ActorRef = _
+  private var actors: Seq[Actors] = Seq.empty
+
+  private val models =
+    config
+      .getList(ModelManager.Configuration.models)
+      .asScala
+      .map(
+        data =>
+          data.valueType() match {
+            case ConfigValueType.LIST =>
+              data.unwrapped().asInstanceOf[util.ArrayList[String]].asScala
+            case other =>
+              require(
+                other == ConfigValueType.LIST,
+                s"Model config is not in right format. It should be List of Lists instead of $other"
+              )
+              Seq.empty
+          }
+      )
+      .foldLeft(Map.empty[String, Int]) { (map, seq) =>
+        val weight = seq.last.asInstanceOf[Int]
+        require(
+          weight >= 0 && weight <= 100,
+          "Weight of every model must be greated then 0 and lesser then 100"
+        )
+        map + (seq.head -> weight)
+      }
+      .map { case (model, weight) => ModelType.apply(model) -> weight }
+
+  private def genericTrainerCreator: ActorRef => TrainData => Future[Unit] = {
+    trainer => trainData: TrainData =>
+      (trainer ? trainData)(10 minutes).map(_ => ())
+  }
+
+  private def genericPredictorCreator
+    : (ActorRef, ModelType, Int) => Predict => Future[(PredictResult, ModelType, Int)] = {
+    (actor, modelType, modelWeight) => (predict: Predict) =>
+      (actor ? predict.data)(10 seconds).map {
+        case result: PredictResult => (result, modelType, modelWeight)
+      }
+  }
 
   private var scheduledMessage: Option[Cancellable] = None
 
-  private val naiveRoutees: ActorRef =
-    createPredictors(
-      config.getInt(NaiveTrainer.Configuration.numberOfPredictors),
-      NaiveTrainer.name
-    )
-
-  private val svmRoutees: ActorRef =
-    createPredictors(config.getInt(SVMTrainer.Configuration.numberOfPredictors), SVMTrainer.name)
-
-  private var naiveTrainer: ActorRef = _
-
-  private val svmTrainer: ActorRef = startTrainer(
-    props = SVMTrainer.props(
-      config = config.getConfig(SVMTrainer.Configuration.configPath),
-      predictors = svmRoutees,
-      writeModelTo = config.getString("write-model-to")
-    ),
-    specificConfig = config.getConfig("svm.trainer"),
-    name = SVMTrainer.name + "Trainer"
-  )
-
-  private val adaBoostPredictors = createPredictors(
-    config.getInt(AdaBoostTrainer.Configuration.numberOfPredictors),
-    AdaBoostTrainer.name
-  )
-
-  private val adaBoostTrainer: ActorRef = startTrainer(
-    props = AdaBoostTrainer.props(
-      config.getConfig(AdaBoostTrainer.Configuration.configPath),
-      adaBoostPredictors,
-      config.getString("write-model-to")
-    ),
-    specificConfig = config.getConfig(AdaBoostTrainer.Configuration.configPath + ".trainer"),
-    AdaBoostTrainer.name + "Trainer"
-  )
+  private var train: Seq[TrainData => Future[Unit]] = Seq.empty
+  private var predict: Seq[Predict => Future[(PredictResult, ModelType, Int)]] = Seq.empty
 
   private def trainModels(message: TrainData): Future[Unit] =
-    Future
-      .sequence(defaultTrainModels map {
-        case ModelType.SVM =>
-          svmTrainer.ask(message)(timeout = 10 minutes)
-        case ModelType.NaiveBayes =>
-          naiveTrainer.ask(message)(timeout = 10 minutes)
-        case ModelType.AdaBoost =>
-          adaBoostTrainer.ask(message)(timeout = 10 minutes)
-      }) map (_ => self ! SwitchToPrediction)
+    Future.sequence(train.map(_(message))) map (_ => self ! SwitchToPrediction)
 
   private def receivePredict(
     message: Predict,
     replyTo: ActorRef
-  ): Future[Unit] = {
-    val naivePredict = (naiveRoutees ? message.data)
-      .map {
-        case result: PredictResult =>
-          result
-      }
-
-//    val svmPredict = (svmRoutees ? message.data)
-//      .map {
-//        case result: PredictResult =>
-//          result
-//      }
-
-    val adaPredict = (adaBoostPredictors ? message.data) map {
-      case result: PredictResult => result
-    }
-
+  ): Future[Unit] =
     for {
-      naiveResult <- naivePredict
-//      svmResult <- svmPredict
-      adaResult <- adaPredict
-      resultModels = List(
-        Model(
-          naiveResult.result,
-          ModelType.NaiveBayes
-        ),
-//        Model(
-//          svmResult.result,
-//          ModelType.SVM
-//        ),
-        Model(
-          adaResult.result,
-          ModelType.AdaBoost
-        )
-      )
-      prediction = List(naiveResult.result, adaResult.result) //, svmResult.result)
-        .groupBy(identity)
-        .filter(data => data._1 == 1 || data._1 == 0)
-        .reduceLeft(
-          (x, y) =>
-            if (x._1 == 1) {
-              if (x._2.size >= y._2.size) x
-              else y
-            } else {
-              if (y._2.size >= x._2.size) x
-              else y
-            }
-        )
-        ._1
-      typeOfEmail = if (prediction == 1) Ham else Spam
+      results <- Future.sequence(predict.map(_(message)))
+      resultModels = results
+        .map { case (predictResult, modelType, _) => Model(predictResult.result, modelType) }
 
-      percent = prediction
+      prediction = results
+        .groupBy(_._1.result)
+        .filter(data => data._1 == 1 || data._1 == 0)
+        .map {
+          case (result, seq) =>
+            result -> seq.map(_._3).sum
+        }
+        .reduceLeft[(Int,Int)]{
+          case ((result0, weight0), (result1, weight1)) =>
+            if (weight0 > weight1) result0 -> weight0
+            else result1 -> weight1
+        }
+        ._1
+
+      typeOfEmail = if (prediction == 1) Ham else Spam
 
       result = AfterPrediction(
         id = message.data.id,
         realType = message.data.`type`,
         predictedType = typeOfEmail,
-        percent = percent,
+        result = prediction,
         models = resultModels
       )
     } yield {
       replyTo ! result
       resultsAggregator ! result
     }
-  }
 
   private def shiftScheduledMessage(
     cancellable: Option[Cancellable],
@@ -183,17 +167,8 @@ class ModelManager(
 
   private var trainData: Seq[CleansedEmail] = Seq.empty
 
-  private def writeAndForgot(): Unit = {
-//    svmTrainer ! WriteModels
-    naiveTrainer ! WriteModels
-    adaBoostTrainer ! WriteModels
-//    svmTrainer ! ForgotModel
-    naiveTrainer ! ForgotModel
-    adaBoostTrainer ! ForgotModel
-    naiveRoutees ! Broadcast(ForgotModel)
-//    svmRoutees ! Broadcast(ForgotModel)
-    adaBoostPredictors ! Broadcast(ForgotModel)
-  }
+  private def writeModels(): Unit =
+    actors.foreach(_.trainer ! WriteModels)
 
   private def predictState: Receive = {
     case SetShiftMessage =>
@@ -203,7 +178,7 @@ class ModelManager(
       )
 
     case WriteModels =>
-      writeAndForgot()
+      writeModels()
       context.become(trainState)
       scheduledMessage = None
       log.info("Going to train state, completely forgot everything.")
@@ -263,19 +238,95 @@ class ModelManager(
 
   override def receive: Receive = startingState
 
-  private def startingState: Receive = {
-    case msg: FeatureSizeForBayes =>
-      naiveTrainer = startTrainer(
-        props = NaiveTrainer
-          .props(
-            config = config.getConfig(NaiveTrainer.Configuration.configPath),
-            featureSize = msg.size,
-            predictors = naiveRoutees,
+  private def createActors: (ModelType, Int, Int) => Actors = { (modelType, featureSize, weight) =>
+    val (trainer, predictor) = modelType match {
+      case ModelType.SVM =>
+        val countOfPredictors = config.getInt(Configuration.numberOfPredictors)
+        val predictors = createPredictors(
+          countOfPredictors,
+          SVMTrainer.name
+        )
+
+        startTrainer(
+          props = SVMTrainer.props(
+            config = config.getConfig(SVMTrainer.Configuration.configPath),
+            predictors = predictors,
+            writeModelTo = config.getString("write-model-to"),
+            countOfPredictors = countOfPredictors
+          ),
+          specificConfig = config.getConfig("trainer"),
+          name = SVMTrainer.name + "Trainer"
+        ) -> predictors
+
+      case ModelType.NaiveBayes =>
+        val countOfPredictors = config.getInt(Configuration.numberOfPredictors)
+        val predictors = createPredictors(
+          countOfPredictors,
+          NaiveTrainer.name
+        )
+        startTrainer(
+          props = NaiveTrainer
+            .props(
+              config = config.getConfig(NaiveTrainer.Configuration.configPath),
+              featureSize = featureSize,
+              predictors = predictors,
+              countOfPredictors = countOfPredictors,
+              writeModelTo = config.getString("write-model-to")
+            ),
+          specificConfig = config.getConfig("trainer"),
+          name = "NaiveTrainer"
+        ) -> predictors
+      case ModelType.AdaBoost =>
+        val countOfPredictors = config.getInt(Configuration.numberOfPredictors)
+        val predictors = createPredictors(
+          countOfPredictors,
+          AdaBoostTrainer.name
+        )
+        startTrainer(
+          props = AdaBoostTrainer.props(
+            adaBoostConfig = config.getConfig(AdaBoostTrainer.Configuration.configPath),
+            predictors = predictors,
+            countOfPredictors = countOfPredictors,
             writeModelTo = config.getString("write-model-to")
           ),
-        specificConfig = config.getConfig("naive-bayes.trainer"),
-        name = "NaiveTrainer"
+          specificConfig = config.getConfig("trainer"),
+          AdaBoostTrainer.name + "Trainer"
+        ) -> predictors
+
+      case ModelType.KNN =>
+        val countOfPredictors = config.getInt(Configuration.numberOfPredictors)
+        val predictors = createPredictors(
+          countOfPredictors,
+          KNNTrainer.name
+        )
+
+        startTrainer(
+          props = KNNTrainer.props(
+            knnConfig = config.getConfig(KNNTrainer.Configuration.configPath),
+            predictors = predictors,
+            countOfPredictors = countOfPredictors,
+            writeModelTo = config.getString("write-model-to")
+          ),
+          specificConfig = config.getConfig("trainer"),
+          KNNTrainer.name + "Trainer"
+        ) -> predictors
+    }
+
+    Actors(
+      predictor = predictor,
+      trainer = trainer,
+      weight = weight,
+      modelType = modelType
+    )
+  }
+
+  private def startingState: Receive = {
+    case msg: FeatureSizeForBayes =>
+      actors = models.map { case (model, weight) => createActors(model, msg.size, weight) }.toSeq
+      predict = actors.map(
+        actors => genericPredictorCreator(actors.predictor, actors.modelType, actors.weight)
       )
+      train = actors.map(actors => genericTrainerCreator(actors.trainer))
 
       log.info("Going to trainState")
       context.become(trainState)
@@ -295,7 +346,7 @@ class ModelManager(
         .props(
           singletonProps = props.withDispatcher("model-dispatcher"),
           terminationMessage = PoisonPill,
-          settings = ClusterSingletonManagerSettings(specificConfig)
+          settings = ClusterSingletonManagerSettings(context.system)
         )
         .withDispatcher("model-dispatcher")
     )
@@ -304,7 +355,7 @@ class ModelManager(
       ClusterSingletonProxy
         .props(
           singletonManagerPath = singleton.path.toStringWithoutAddress,
-          settings = ClusterSingletonProxySettings(specificConfig)
+          settings = ClusterSingletonProxySettings(context.system)
         )
         .withDispatcher("model-dispatcher")
     )

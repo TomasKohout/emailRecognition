@@ -1,5 +1,5 @@
 package eu.kohout.dictionary
-import akka.actor.{Actor, Cancellable, Props}
+import akka.actor.{Actor, ActorRef, Cancellable, Props}
 import eu.kohout.dictionary.CleansedDataAccumulator.{CreateDictionary, SendDictionary}
 import com.typesafe.scalalogging.Logger
 import eu.kohout.cleandata.CleanDataManager.CleansedData
@@ -9,9 +9,9 @@ import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
 
 object CleansedDataAccumulator {
-  case object CreateDictionary extends CleansedDataAccumulatorMessage
+  case class CreateDictionary(loadDataManager: ActorRef) extends CleansedDataAccumulatorMessage
   private case object SendDictionary extends CleansedDataAccumulatorMessage
-  case class Dictionary(data: Seq[CleansedData]) extends CleansedDataAccumulatorMessage
+  case class DataForDictionary(data: Seq[CleansedData]) extends CleansedDataAccumulatorMessage
 
   sealed trait CleansedDataAccumulatorMessage
 
@@ -31,22 +31,23 @@ class CleansedDataAccumulator extends Actor {
   private var sendToDictionary: Option[Cancellable] = None
 
   override def receive: Receive = {
-    case CreateDictionary =>
+    case CreateDictionary(loadDataManager) =>
       log.debug("Sending CreateDictionaryFromData to loadDataManager")
 
-      sender() ! CreateDictionaryFromData
+      loadDataManager ! CreateDictionaryFromData
 
     case data: CleansedData =>
+
       sendToDictionary = sendToDictionary.fold(
         Some(
           context.system.scheduler
-            .scheduleOnce(delay = 15 seconds, message = SendDictionary, receiver = self)
+            .scheduleOnce(delay = 1 minute, message = SendDictionary, receiver = self)
         )
       ) { cancellable =>
         cancellable.cancel()
         Some(
           context.system.scheduler.scheduleOnce(
-            delay = 15 seconds,
+            delay = 1 minute,
             message = SendDictionary,
             receiver = self
           )
@@ -54,11 +55,11 @@ class CleansedDataAccumulator extends Actor {
       }
 
       cleansedData = cleansedData :+ data
+      log.debug("Size: {}", cleansedData.size)
 
     case SendDictionary =>
       log.debug("Dictionary resolved! size of cleansedData {}", cleansedData.size)
-
-      context.parent ! CleansedDataAccumulator.Dictionary(cleansedData)
+      context.parent ! CleansedDataAccumulator.DataForDictionary(cleansedData)
       context.stop(self)
 
   }

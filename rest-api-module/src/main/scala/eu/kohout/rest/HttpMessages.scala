@@ -18,7 +18,7 @@ object HttpMessages {
   case class EmailRecognitionResponse(
     id: String,
     label: Labels,
-    models: List[Model])
+    models: Seq[Model])
       extends HttpMessage
 
   case class Model(

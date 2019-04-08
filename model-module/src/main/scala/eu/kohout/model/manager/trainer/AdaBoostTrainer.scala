@@ -4,7 +4,7 @@ import akka.actor.{ActorRef, Props}
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
 import eu.kohout.model.manager.trainer.AdaBoostTrainer.Configuration
-import eu.kohout.model.manager.traits.Trainer
+import eu.kohout.model.manager.trainer.template.Trainer
 import smile.classification.AdaBoost
 
 object AdaBoostTrainer {
@@ -12,8 +12,6 @@ object AdaBoostTrainer {
 
   object Configuration  {
     val configPath = "adaboost"
-    val shareAfter: String = "share-model-after"
-    val numberOfPredictors: String = s"$configPath.number-of-predictors"
     val ntrees = "number-of-trees"
     val maxNodes = "max-nodes"
   }
@@ -21,16 +19,18 @@ object AdaBoostTrainer {
   def props(
     adaBoostConfig: Config,
     predictors: ActorRef,
+    countOfPredictors: Int,
     writeModelTo: String
   ): Props =
     Props(
-      new AdaBoostTrainer(adaBoostConfig = adaBoostConfig, predictors = predictors, writeModelTo)
+      new AdaBoostTrainer(adaBoostConfig = adaBoostConfig, predictors = predictors, writeModelTo = writeModelTo, countOfPredictors = countOfPredictors)
     )
 }
 
 class AdaBoostTrainer(
   adaBoostConfig: Config,
   val predictors: ActorRef,
+  val countOfPredictors: Int,
   val writeModelTo: String)
     extends Trainer[AdaBoost] {
 

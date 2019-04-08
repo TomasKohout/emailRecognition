@@ -1,9 +1,9 @@
 package eu.kohout.model.manager.predictor
 
 import akka.actor.{Actor, Props}
+import com.thoughtworks.xstream.XStream
 import com.typesafe.scalalogging.Logger
-import eu.kohout.model.manager.ModelMessages.{CleansedEmail, ForgotModel, PredictResult, UpdateModel}
-import eu.kohout.model.manager.traits.Predictor
+import eu.kohout.model.manager.ModelMessages.{CleansedEmail, PredictResult, Trained, UpdateModel}
 import smile.classification.Classifier
 
 import scala.util.Try
@@ -13,9 +13,11 @@ object GenericPredictor {
   def props: Props = Props(new GenericPredictor)
 }
 
-class GenericPredictor extends Actor with Predictor {
+class GenericPredictor extends Actor{
+  var model: Option[Classifier[Array[Double]]] = None
+  val serializer = new XStream
 
-  override val log = Logger(context.self.path.toStringWithoutAddress)
+  val log = Logger(context.self.path.toStringWithoutAddress)
 
   override def receive: Receive = {
     case updateModel: UpdateModel =>
@@ -26,6 +28,7 @@ class GenericPredictor extends Actor with Predictor {
         case other =>
           log.error(s"received something that is not classifier for Array[Double =>> {}", other)
       }
+      sender() ! Trained
 
     case predict: CleansedEmail =>
       val replyTo = sender()
@@ -44,9 +47,6 @@ class GenericPredictor extends Actor with Predictor {
         result = result,
         `type` = predict.`type`
       )
-
-    case ForgotModel =>
-      model = None
   }
 
   override def preRestart(
@@ -54,6 +54,6 @@ class GenericPredictor extends Actor with Predictor {
     message: Option[Any]
   ): Unit = {
     super.preRestart(reason, message)
-    self ! UpdateModel(serializer.toXML(model))
+    model.foreach(model => self ! UpdateModel(serializer.toXML(model)))
   }
 }

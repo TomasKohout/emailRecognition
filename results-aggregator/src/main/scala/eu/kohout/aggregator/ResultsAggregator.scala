@@ -3,42 +3,38 @@ package eu.kohout.aggregator
 import java.io.{File, PrintWriter}
 
 import akka.Done
-import akka.actor.{Actor, ActorRef, ActorSystem, Cancellable, PoisonPill, Props}
-import akka.cluster.sharding.ShardRegion
+import akka.actor.{Actor, Cancellable, Props}
+import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
 import eu.kohout.aggregator.ResultsAggregator._
 import eu.kohout.parser.EmailType
-
-import scala.collection.mutable
 
 object ResultsAggregator {
 
   val name = "ResultsAggregator"
 
-  val idExtractor: ShardRegion.ExtractEntityId = {
-    case msg => (name, msg)
+  object Configuration {
+    val configPath = "results-aggregator"
+    val resultsDir = "results-directory"
   }
 
-  val shardResolver: ShardRegion.ExtractShardId =
-    _ => (math.abs(name.hashCode) % 100).toString
-
-  def props: Props = Props(new ResultsAggregator)
+  def props(config: Config): Props = Props(new ResultsAggregator(config))
 
   case class AfterPrediction(
     id: String,
     realType: EmailType,
     predictedType: EmailType,
-    percent: Int,
-    models: List[Model])
+    result: Int,
+    models: Seq[Model])
       extends ResultsAggregatorMessages {
     override def toString: String = s"""
                                        |{
                                        | "id": "$id",
                                        | "before": "${realType.toString}",
                                        | "result": "${predictedType.toString}",
-                                       | "result": "$percent",
+                                       | "result": "$result",
                                        | "models":
-                                       |    "${models.map { _.toString}.mkString("[", ",\n", "]")}"
+                                       |    ${models.map { _.toString}.mkString("[", ",\n", "]")}
                                        |}
                                        |""".stripMargin
   }
@@ -48,14 +44,14 @@ object ResultsAggregator {
   sealed trait ResultsAggregatorMessages
 }
 
-class ResultsAggregator extends Actor {
+class ResultsAggregator(config: Config) extends Actor {
   private val log = Logger(self.path.toStringWithoutAddress)
   private var results: Seq[AfterPrediction] = Seq.empty
 
   private var cancellable: Option[Cancellable] = None
 
   //todo add configuration for results
-  private val resultsDir = "/Users/tomaskohout/results"
+  private val resultsDir = config.getString(Configuration.resultsDir)
   private var countOfResult = 0
 
   private def writeResults: Receive = {
@@ -86,8 +82,7 @@ class ResultsAggregator extends Actor {
       val matched = result.filter(_._3).count(_._3)
 
       try {
-        writer1.write("Accuracy\n")
-        writer1.write(matched.toDouble / result.size.toDouble * 100 + " %")
+        writer1.write("Accuracy: " + matched.toDouble / result.size.toDouble * 100 + " %\n")
         writer1.write(table)
         writer2.write(mkStringFromResults)
       } finally {

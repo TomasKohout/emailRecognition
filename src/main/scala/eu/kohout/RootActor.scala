@@ -85,7 +85,6 @@ object RootActor {
 
   object Configuration {
     val configPath = "root-actor"
-    val resultsDir = "results-directory"
   }
 
   def props = Props(new RootActor)
@@ -103,7 +102,6 @@ class RootActor extends Actor with Stash {
 
   implicit private val config: Config = ConfigFactory.load()
   private val rootActorConfig = config.getConfig(Configuration.configPath)
-  private val resultsDir = rootActorConfig.getString(Configuration.resultsDir)
 
   private val selfProxy = actorSystem.actorOf(
     ClusterSingletonProxy
@@ -117,7 +115,7 @@ class RootActor extends Actor with Stash {
   private val log = Logger(getClass)
 
   private val resultsAggregator = clusterSingleton(
-    ResultsAggregator.props,
+    ResultsAggregator.props(config.getConfig(ResultsAggregator.Configuration.configPath)),
     name = ResultsAggregator.name
   )
 
@@ -131,8 +129,7 @@ class RootActor extends Actor with Stash {
             ),
           selfProxy,
           resultsAggregator
-        )
-        .withDispatcher("model-dispatcher"),
+        ),
       name = ModelManager.name
     )
 
@@ -145,8 +142,7 @@ class RootActor extends Actor with Stash {
           ),
         modelManager = modelManager
       ),
-    name = CleanDataManager.name,
-    dispatcher = "clean-dispatcher"
+    name = CleanDataManager.name
   )
 
   private val loadDataManager = clusterSingleton(
@@ -157,8 +153,7 @@ class RootActor extends Actor with Stash {
         resultsAggregator = resultsAggregator,
         rootActor = selfProxy
       ),
-    LoadDataManager.name,
-    "load-dispatcher"
+    LoadDataManager.name
   )
 
   private val dictionaryResolver = clusterSingleton(

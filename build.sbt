@@ -1,4 +1,13 @@
-import Dependencies.{akkaCluster, akkaDistributedData, akkaHttpCirce, circeCore, circeGeneric, circeParser, typesafeConfig, _}
+import Dependencies.{
+  akkaCluster,
+  akkaDistributedData,
+  akkaHttpCirce,
+  circeCore,
+  circeGeneric,
+  circeParser,
+  typesafeConfig,
+  _
+}
 
 lazy val commonSettings = Seq(
   organization := "eu.kohout",
@@ -113,9 +122,8 @@ lazy val `clean-data-module` = (project in file("clean-data-module"))
       akkaCluster,
       akkaClusterSharding,
       smileCore,
-      symspell,
       jsoup
-    )
+    ),
   )
   .dependsOn(`model-module`)
 
@@ -166,13 +174,11 @@ lazy val `results-aggregator` = (project in file("results-aggregator"))
   .dependsOn(`email-parser`)
 
 lazy val `dictionary-resolver` = (project in file("dictionary-resolver"))
-    .dependsOn(`load-data-module`)
-
-
+  .dependsOn(`load-data-module`)
 
 assemblyMergeStrategy in assembly := {
   case "application.conf" => MergeStrategy.discard
-  case "logback.xml" => MergeStrategy.discard
+  case "logback.xml"      => MergeStrategy.discard
   case x =>
     val oldStrategy = (assemblyMergeStrategy in assembly).value
     oldStrategy(x)

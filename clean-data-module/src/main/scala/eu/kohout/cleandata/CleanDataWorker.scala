@@ -27,13 +27,13 @@ object CleanDataWorker {
     stopWords: String,
     config: Config
   ): Props =
-    Props(new CleanDataWorker(modelManager, Some(stopWords), config))
+    Props(new CleanDataWorker(modelManager, stopWords, config))
 
 }
 
 class CleanDataWorker(
   modelManager: ActorRef,
-  stopWords: Option[String],
+  stopWords: String,
   config: Config)
     extends Actor
     with Stash {
@@ -50,7 +50,7 @@ class CleanDataWorker(
   private val stemmer = createStemmer(config.getString(Configuration.stemmer))
 
   private val symspell = {
-    val symSpell = new SymSpell(-1, 3, -1, 1)
+    val symSpell = new SymSpell(500, 2, -1, 1)
     symSpell.loadDictionary(config.getString(Configuration.symspellDictionary), 0, 1)
     symSpell
   }
@@ -68,9 +68,10 @@ class CleanDataWorker(
 
   private def withoutBag: Receive = {
     case msg: CleanDataForDictionary =>
+      val replyTo = sender()
       log.debug("Cleaning data for dictionary with email id {}", msg.email.id)
       cleanEmail(msg.email)
-        .map(sender() !)
+        .map(replyTo !)
         .recover {
           case ex =>
             log.error(s"Exception occured when cleaning email with id ${msg.email.id}", ex)
@@ -142,21 +143,12 @@ class CleanDataWorker(
           case HTML  => cleanHtml(bodyPart.body)
           case PLAIN => bodyPart.body
         }
-      }.reduceLeft(_ + " " + _)
+      }
+      .reduceLeft(_ + " " + _)
 
-    val cleanedText = concatenateSplitWords(text).sentences
-      .flatMap(symspell.lookupCompound(_).asScala.map(_.term))
-      .flatMap(_.words())
-      .map(
-        _.flatMap(
-          char =>
-            if (Character.isLetter(char) || Character.isWhitespace(char)) {
-              Some(char.toLower)
-            } else {
-              None
-            }
-        )
-      )
+    val cleanedText = concatenateSplitWords(text)
+      .words(stopWords)
+      .flatMap(symspell.wordSegmentation(_).correctedString.words(stopWords))
       .flatMap(
         word =>
           try {
@@ -194,16 +186,12 @@ class CleanDataWorker(
   private def cleanHtml(body: String): String =
     Jsoup.parse(body).getAllElements.asScala.map(_.text).mkString(" ")
 
-  override def postRestart(reason: Throwable): Unit = {
-    super.postRestart(reason)
-    context.parent ! GetBag
-  }
-
   override def preRestart(
     reason: Throwable,
     message: Option[Any]
   ): Unit = {
     super.preRestart(reason, message)
+    bag.map(xstream.toXML).map(ShareBag).foreach(self !)
     log.info("Reason why i am restarted {}, stack {}", reason, reason.getStackTrace)
   }
 }

@@ -3,7 +3,7 @@ package eu.kohout.loaddata
 import java.io.File
 
 import akka.Done
-import akka.actor.{Actor, ActorRef, Props}
+import akka.actor.{ActorRef, Props}
 import akka.cluster.sharding.ShardRegion
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
@@ -15,13 +15,6 @@ import scala.concurrent.ExecutionContext
 object LoadDataManager {
 
   val name = "LoadData"
-
-  val idExtractor: ShardRegion.ExtractEntityId = {
-    case msg => (name, msg)
-  }
-
-  val shardResolver: ShardRegion.ExtractShardId =
-    _ => (math.abs(name.hashCode) % 100).toString
 
   def props(
     config: Config,

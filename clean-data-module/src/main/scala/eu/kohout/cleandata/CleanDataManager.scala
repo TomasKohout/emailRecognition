@@ -1,7 +1,7 @@
 package eu.kohout.cleandata
 import SymSpell.SymSpell
 import akka.Done
-import akka.actor.{Actor, ActorRef, Props, Stash}
+import akka.actor.{Actor, ActorRef, Props}
 import akka.cluster.routing.{ClusterRouterPool, ClusterRouterPoolSettings}
 import akka.cluster.sharding.ShardRegion
 import akka.routing.{Broadcast, SmallestMailboxPool}
@@ -59,8 +59,7 @@ object CleanDataManager {
 class CleanDataManager(
   config: Config,
   modelManager: ActorRef)
-    extends Actor
-    with Stash {
+    extends Actor {
 
   private val log = Logger(self.path.toStringWithoutAddress)
 
@@ -69,18 +68,14 @@ class CleanDataManager(
 
   private val workers: ActorRef = createWorkers
 
+  override def receive: Receive = withoutDictionary
+
   private def withDictionary: Receive = {
     case message: PredictionData =>
       workers.!(message)(sender())
 
     case message: TrainData =>
       workers.!(message)(sender())
-
-    case msg: CleanDataForDictionary =>
-      workers.!(msg)(sender())
-
-    case GetBag =>
-      sender() ! ShareBag(xStream.toXML(bag))
 
     case Done => throw new Exception ("Reseting actor")
 
@@ -89,12 +84,7 @@ class CleanDataManager(
 
   }
 
-  override def receive: Receive = {
-    case _: TrainData =>
-      stash()
-
-    case _: PredictionData =>
-      stash()
+  private def withoutDictionary: Receive = {
 
     case msg: CleanDataForDictionary =>
       log.debug("Forwarding clean data for dictionary with email id {}", msg.email.id)
@@ -104,8 +94,6 @@ class CleanDataManager(
       bag = xStream.fromXML(msg.bag).asInstanceOf[Bag[String]]
       workers ! Broadcast(msg)
       context.become(withDictionary)
-
-      unstashAll()
 
     case Done => throw new Exception ("Reseting actor")
 
@@ -139,8 +127,7 @@ class CleanDataManager(
               config = config,
             )
             .withDispatcher("clean-dispatcher")
-        )
-        .withDispatcher("clean-dispatcher"),
+        ),
       name = CleanDataWorker.workerName
     )
 

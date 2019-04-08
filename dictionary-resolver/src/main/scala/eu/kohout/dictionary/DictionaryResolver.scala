@@ -1,21 +1,21 @@
 package eu.kohout.dictionary
 
 import java.io.{File, FileWriter}
+import java.time.Instant
 
 import akka.Done
 import akka.actor.{Actor, ActorRef, Props}
-import akka.cluster.sharding.ShardRegion
-import akka.pattern.ask
-import akka.util.Timeout
 import com.thoughtworks.xstream.XStream
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
+import eu.kohout.cleandata.CleanDataManager.CleansedData
 import eu.kohout.dictionary.DictionaryResolver.{Configuration, Dictionary, ResolveDictionary}
+import eu.kohout.parser.EmailType
 import eu.kohout.parser.EmailType.{Ham, Spam}
+import org.apache.commons.lang.StringUtils
 import smile.feature.Bag
 
-import scala.concurrent.duration._
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.ExecutionContext
 import scala.io.Source
 
 object DictionaryResolver {
@@ -23,18 +23,11 @@ object DictionaryResolver {
 
   object Configuration {
     val configPath = "dictionary"
-    val loadDictionaryPath = "load-dictionary-path"
+    val loadHamDictionaryPath = "load-ham-dictionary-path"
+    val loadSpamDictionaryPath = "load-spam-dictionary-path"
     val takeUpTo = "take-up-to"
-    val timeOut = "timeout"
     val saveTo = "save-to"
   }
-
-  val idExtractor: ShardRegion.ExtractEntityId = {
-    case msg => (name, msg)
-  }
-
-  val shardResolver: ShardRegion.ExtractShardId =
-    _ => (math.abs(name.hashCode) % 100).toString
 
   def props(
     config: Config,
@@ -58,93 +51,128 @@ class DictionaryResolver(
   loadDataManager: ActorRef,
   rootActor: ActorRef)
     extends Actor {
-  implicit private val createDictionaryTimeout: Timeout =
-    config.getDuration(Configuration.timeOut).getSeconds seconds
   implicit private val ec: ExecutionContext = context.dispatcher
 
   private val log = Logger(self.path.toStringWithoutAddress)
   private val upTo = config.getInt(Configuration.takeUpTo)
   private val saveTo = config.getString(Configuration.saveTo)
-  private var dictionary: Seq[String] = Seq.empty
   private var bag: Bag[String] = _
   private val xStream = new XStream
 
   override def receive: Receive = {
     case Dictionary(dict) =>
-      val shrinkedDict = dict.take(upTo)
-      bag = new Bag[String](shrinkedDict)
+      log.debug("\nTopWords\n" + dict.take(10).mkString("\n"))
+      bag = new Bag[String](dict)
 
-      rootActor ! DictionaryResolver.DictionaryResolved(xStream.toXML(bag), shrinkedDict.length)
-
-      val printer = new FileWriter(new File(saveTo))
-
-      try {
-        printer.write(dictionary.mkString("\n"))
-      } finally {
-        printer.close()
-      }
+      rootActor ! DictionaryResolver.DictionaryResolved(xStream.toXML(bag), dict.length)
 
     case ResolveDictionary =>
-      val dictionaryPath =
-        if (config.hasPath(Configuration.loadDictionaryPath))
-          Some(config.getString(Configuration.loadDictionaryPath))
-        else
-          None
+      val dictionaryPath = resolvePath(Configuration.loadHamDictionaryPath) -> resolvePath(
+        Configuration.loadSpamDictionaryPath
+      )
 
-      for {
-        dictionary <- dictionaryPath.fold(createDictionary)(loadDictionary)
-      } yield self ! dictionary
+      loadDictionary(dictionaryPath).fold(
+        context
+          .actorOf(CleansedDataAccumulator.props()) ! CleansedDataAccumulator
+          .CreateDictionary(loadDataManager)
+      )(self !)
 
-      ()
+    case CleansedDataAccumulator.DataForDictionary(data) =>
+      val groupedByType = data.groupBy(_.`type`)
 
+      val hamFeatures = aggregateResults(
+        groupedByType
+          .getOrElse(Ham, Seq.empty)
+      ).take(upTo)
+
+      val spamFeatures = aggregateResults(
+        groupedByType
+          .getOrElse(Spam, Seq.empty)
+      ).take(upTo)
+
+      self ! Dictionary(
+        hamFeatures
+          .intersect(spamFeatures)
+          .foldLeft((hamFeatures ++ spamFeatures).toSet)(
+            (featuresSet, string) => featuresSet - string
+          )
+          .toArray
+      )
+      data
+        .groupBy(_.`type`)
+        .foreach {
+          case (emailType, data) =>
+            emailType match {
+              case EmailType.Ham =>
+                writeData(new FileWriter(new File(saveTo + "/ham-dictionary-" + Instant.now.toString +  ".txt")), data)
+              case EmailType.Spam =>
+                writeData(new FileWriter(new File(saveTo + "/spam-dictionary-" + Instant.now.toString +  ".txt")), data)
+              case _ => ()
+            }
+        }
     case Done => throw new Exception("Reseting actor")
+    case other =>
+      log.debug("Got other of type {}, {}", other.getClass, other)
 
   }
 
-  private def createDictionary: Future[Dictionary] =
-    context.system
-      .actorOf(CleansedDataAccumulator.props())
-      .?(CleansedDataAccumulator.CreateDictionary)(createDictionaryTimeout, loadDataManager)
-      .map {
-        case CleansedDataAccumulator.Dictionary(data) =>
-          dictionary = data.flatMap(_.data).map(_._1)
+  private def aggregateResults: Seq[CleansedData] => Seq[String] =
+    _.flatMap(_.data)
+      .foldLeft(Map.empty[String, Int]) {
+        case (map, (word, occurrence)) =>
+          map + (
+            word -> map
+              .get(word)
+              .fold(occurrence)(_ + occurrence)
+          )
+      }
+      .toSeq
+      .sortWith(_._2 > _._2)
+      .map(_._1)
 
-          val groupedByType = data.groupBy(_.`type`)
+  private def resolvePath(path: String): Option[String] =
+    if (config.hasPath(path) && new File(config.getString(path)).isFile)
+      Some(config.getString(path))
+    else
+      None
 
-          val hamFeatures = groupedByType
-            .getOrElse(Ham, Seq.empty)
-            .flatMap(_.data)
-            .sortWith(_._2 > _._2)
-            .take(upTo)
-            .map(_._1)
+  private def writeData(
+    writer: FileWriter,
+    data: Seq[CleansedData]
+  ): Unit =
+    try {
+      writer.write(
+        aggregateResults(data)
+          .mkString("\n")
+      )
+    } finally {
+      writer.close()
+    }
 
-          val spamFeatures = groupedByType
-            .getOrElse(Spam, Seq.empty)
-            .flatMap(_.data)
-            .sortWith(_._2 > _._2)
-            .take(upTo)
-            .map(_._1)
+  private def loadWords(path: Option[String]): Set[String] =
+    path
+      .fold(Set.empty[String])(
+        path =>
+          Source.fromFile(path).getLines().toSet.filterNot(StringUtils.isWhitespace).map(_.trim)
+      )
 
+  private def loadDictionary: ((Option[String], Option[String])) => Option[Dictionary] = {
+    case (hamPath, spamPath) =>
+      val hams = loadWords(hamPath).take(upTo)
+      val spams = loadWords(spamPath).take(upTo)
+
+      if (hams.nonEmpty || spams.nonEmpty)
+        Some(
           Dictionary(
-            hamFeatures
-              .intersect(spamFeatures)
-              .foldLeft((hamFeatures ++ spamFeatures).toSet)(
+            hams
+              .intersect(spams)
+              .foldLeft(hams ++ spams)(
                 (featuresSet, string) => featuresSet - string
               )
               .toArray
           )
-      }
+        )
+      else None
 
-  private def loadDictionary: String => Future[Dictionary] = { path =>
-    Future.successful {
-      Dictionary(
-        Source
-          .fromFile(new File(path))
-          .getLines()
-          .toSet
-          .toArray
-          .map(_.trim())
-      )
-    }
   }
 }

@@ -6,6 +6,6 @@ case class Model(
   override def toString: String = s"""
                                      |{
                                      |  "typeOfModel": "${this.typeOfModel.toString}",
-                                     |  "result": "${this.percent}"
+                                     |  "result": ${this.percent}
                                      |}""".stripMargin
 }

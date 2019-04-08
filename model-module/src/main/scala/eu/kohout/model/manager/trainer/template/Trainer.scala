@@ -1,5 +1,4 @@
-package eu.kohout.model.manager.traits
-
+package eu.kohout.model.manager.trainer.template
 import java.io.{File, FileWriter}
 
 import akka.actor.{Actor, ActorRef}
@@ -10,12 +9,15 @@ import eu.kohout.model.manager.ModelMessages._
 
 trait Trainer[T] extends Actor {
   protected val predictors: ActorRef
+  protected val countOfPredictors: Int
   protected val writeModelTo: String
 
   private val serializer = new XStream
   private var trainedTimes: Int = 0
+  private var receivedResponse: Int = 0
   protected val log: Logger
   protected val name: String
+  private var replyToTrained: Option[ActorRef] = None
 
   def trainModel: (Array[Array[Double]], Array[Int]) => T
 
@@ -23,13 +25,22 @@ trait Trainer[T] extends Actor {
 
   override def receive: Receive = {
     case msg: TrainData =>
-      train(msg, sender())
+      replyToTrained = Some(sender())
+      train(msg)
 
     case WriteModels =>
       writeModel(name)
+
+    case Trained =>
+      trainedTimes += 1
+      log.debug("trainedTimes: {}", trainedTimes)
+      if (trainedTimes == countOfPredictors) {
+        replyToTrained.foreach(_ ! Trained)
+      }
   }
 
-  protected def train: (TrainData, ActorRef) => Unit = { (trainData, replyTo) =>
+  protected def train: TrainData => Unit = { trainData =>
+    trainedTimes = 0
     val classifiers = trainData.data
       .map(_.`type`.y)(collection.breakOut[Seq[CleansedEmail], Int, Array[Int]])
 
@@ -38,7 +49,6 @@ trait Trainer[T] extends Actor {
     model = Some(trainModel(trainData.data.map(_.data).toArray, classifiers))
 
     model.foreach { trainedModel =>
-      replyTo ! Trained
       predictors ! Broadcast(UpdateModel(serializer.toXML(trainedModel)))
     }
   }

@@ -4,7 +4,7 @@ import akka.actor.{ActorRef, Props}
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
 import eu.kohout.model.manager.trainer.NaiveTrainer.Configuration
-import eu.kohout.model.manager.traits.Trainer
+import eu.kohout.model.manager.trainer.template.Trainer
 import smile.classification.NaiveBayes
 
 object NaiveTrainer {
@@ -12,8 +12,6 @@ object NaiveTrainer {
 
   object Configuration {
     val configPath: String = "naive-bayes"
-    val shareAfter: String = "share-model-after"
-    val numberOfPredictors: String = s"$configPath.number-of-predictors"
     val model = "model"
     val sigma = "sigma"
   }
@@ -22,6 +20,7 @@ object NaiveTrainer {
     config: Config,
     featureSize: Int,
     predictors: ActorRef,
+    countOfPredictors: Int,
     writeModelTo: String
   ): Props =
     Props(
@@ -29,7 +28,8 @@ object NaiveTrainer {
         config = config,
         featureSize = featureSize,
         predictors = predictors,
-        writeModelTo = writeModelTo
+        writeModelTo = writeModelTo,
+        countOfPredictors = countOfPredictors
       )
     )
 }
@@ -38,6 +38,7 @@ class NaiveTrainer(
   config: Config,
   featureSize: Int,
   val predictors: ActorRef,
+  val countOfPredictors: Int,
   val writeModelTo: String)
     extends Trainer[NaiveBayes] {
   override val log: Logger = Logger(self.path.toStringWithoutAddress)

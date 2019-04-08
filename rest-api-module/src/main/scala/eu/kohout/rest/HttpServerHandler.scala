@@ -4,7 +4,6 @@ import akka.actor.ActorRef
 import akka.pattern.ask
 import akka.util.Timeout
 import eu.kohout.aggregator.ResultsAggregator.AfterPrediction
-import eu.kohout.cleandata.CleanDataManager
 import eu.kohout.parser.{EmailParser, EmailType}
 import eu.kohout.rest.HttpMessages.{
   EmailRecognitionRequest,
@@ -27,36 +26,33 @@ case class HttpServerHandler(rootActor: ActorRef)(implicit timeout: Timeout) {
   )(
     implicit ec: ExecutionContext
   ): Future[EmailRecognitionResponse] =
-    try {
-      val textOfEmail = new String(Base64.getDecoder.decode(email.text))
-      log.debug(textOfEmail)
-      Try(
-        CleanDataManager
-          .PredictionData(
-            EmailParser
-              .parseFromString(textOfEmail, EmailType.NotObtained)
-          )
-      ) fold (
-        ex => Future.failed(ex),
-        rootActor ?
-      ) flatMap {
-        case resp: AfterPrediction =>
-          Future.successful(
-            EmailRecognitionResponse(
-              id = resp.id,
-              label = Labels.fromString(resp.predictedType.name),
-              models = resp.models.map(
-                x => Model(percent = x.percent, typeOfModel = ModelTypes.fromString(x.typeOfModel))
-              )
+    Try(
+      HttpMessages.RootActor
+        .PredictionData(
+          EmailParser
+            .parseFromString(
+              new String(Base64.getDecoder.decode(email.text)),
+              EmailType.NotObtained
+            )
+        )
+    ) fold (
+      ex => Future.failed(ex),
+      rootActor ?
+    ) flatMap {
+      case resp: AfterPrediction =>
+        Future.successful(
+          EmailRecognitionResponse(
+            id = resp.id,
+            label = Labels.fromString(resp.predictedType.name),
+            models = resp.models.map(
+              x => Model(percent = x.percent, typeOfModel = ModelTypes.fromString(x.typeOfModel))
             )
           )
-        case HttpMessages.RootActor.NotTrained =>
-          Future.failed(new Exception("Could not predict email. Models are not trained"))
-      }
-    } catch {
-      case th: Throwable => Future.failed(th)
-    }
+        )
 
+      case HttpMessages.RootActor.NotTrained =>
+        Future.failed(new Exception("Could not predict email. Models are not trained"))
+    }
 
   def crossValidation(): Future[Unit] =
     Future.successful(rootActor ! RootActor.StartCrossValidation)
