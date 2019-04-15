@@ -61,7 +61,7 @@ class DictionaryResolver(
 
   override def receive: Receive = {
     case Dictionary(dict) =>
-      log.debug("\nTopWords\n" + dict.take(10).mkString("\n"))
+      log.debug("\nTopWords\n" + dict.take(20).mkString("\n"))
       bag = new Bag[String](dict)
 
       rootActor ! DictionaryResolver.DictionaryResolved(xStream.toXML(bag), dict.length)
@@ -91,11 +91,7 @@ class DictionaryResolver(
       ).take(upTo)
 
       self ! Dictionary(
-        hamFeatures
-          .intersect(spamFeatures)
-          .foldLeft((hamFeatures ++ spamFeatures).toSet)(
-            (featuresSet, string) => featuresSet - string
-          )
+        (hamFeatures ++ spamFeatures).toSet
           .toArray
       )
       data
@@ -104,9 +100,19 @@ class DictionaryResolver(
           case (emailType, data) =>
             emailType match {
               case EmailType.Ham =>
-                writeData(new FileWriter(new File(saveTo + "/ham-dictionary-" + Instant.now.toString +  ".txt")), data)
+                writeData(
+                  new FileWriter(
+                    new File(saveTo + "/ham-dictionary-" + Instant.now.toString + ".txt")
+                  ),
+                  data
+                )
               case EmailType.Spam =>
-                writeData(new FileWriter(new File(saveTo + "/spam-dictionary-" + Instant.now.toString +  ".txt")), data)
+                writeData(
+                  new FileWriter(
+                    new File(saveTo + "/spam-dictionary-" + Instant.now.toString + ".txt")
+                  ),
+                  data
+                )
               case _ => ()
             }
         }
@@ -149,11 +155,10 @@ class DictionaryResolver(
       writer.close()
     }
 
-  private def loadWords(path: Option[String]): Set[String] =
+  private def loadWords(path: Option[String]): Seq[String] =
     path
-      .fold(Set.empty[String])(
-        path =>
-          Source.fromFile(path).getLines().toSet.filterNot(StringUtils.isWhitespace).map(_.trim)
+      .fold(Seq.empty[String])(
+        path => Source.fromFile(path).mkString.split("\n").toSeq
       )
 
   private def loadDictionary: ((Option[String], Option[String])) => Option[Dictionary] = {
@@ -164,12 +169,7 @@ class DictionaryResolver(
       if (hams.nonEmpty || spams.nonEmpty)
         Some(
           Dictionary(
-            hams
-              .intersect(spams)
-              .foldLeft(hams ++ spams)(
-                (featuresSet, string) => featuresSet - string
-              )
-              .toArray
+            (hams ++ spams).toSet.toArray
           )
         )
       else None

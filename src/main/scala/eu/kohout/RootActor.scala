@@ -83,10 +83,6 @@ object RootActor {
     )
   }
 
-  object Configuration {
-    val configPath = "root-actor"
-  }
-
   def props = Props(new RootActor)
 
   case object StartCrossValidation extends RootActorMessage
@@ -101,7 +97,6 @@ class RootActor extends Actor with Stash {
   import RootActor._
 
   implicit private val config: Config = ConfigFactory.load()
-  private val rootActorConfig = config.getConfig(Configuration.configPath)
 
   private val selfProxy = actorSystem.actorOf(
     ClusterSingletonProxy
@@ -216,8 +211,10 @@ class RootActor extends Actor with Stash {
 
     case LoadDataManager.CrossValidationDone =>
       log.info("Cross validation is done")
-      modelManager ! ModelMessages.WriteModels
-
+      modelManager ! Done
+      modelManager ! ModelMessages.FeatureSizeForBayes(
+        bayesSize.getOrElse(throw new Exception("Does not have a bayes size!"))
+      )
       context.become(waitingForOrders)
 
     case HttpMessages.RootActor.PredictionData(_) =>
@@ -231,12 +228,14 @@ class RootActor extends Actor with Stash {
     case HttpMessages.RootActor.PredictionData(email) =>
       if (trained) cleanDataManager.!(CleanDataManager.PredictionData(email))(sender())
       else sender() ! HttpMessages.RootActor.NotTrained
+
     case HttpMessages.RootActor.RestartActors =>
       resultsAggregator ! Done
       dictionaryResolver ! Done
       loadDataManager ! Done
       cleanDataManager ! Done
       modelManager ! Done
+
 
       cleanDataManager ! CleanDataManager.ShareBag(
         bag.map(xStream.toXML).getOrElse(throw new Exception("Does not have a bag!"))

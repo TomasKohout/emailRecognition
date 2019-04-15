@@ -68,6 +68,7 @@ class ModelManager(
   implicit private val timeout: Timeout = 5 seconds
   implicit private val ec: ExecutionContext = context.dispatcher
 
+  private var modelTrained: Int = 0
   private var actors: Seq[Actors] = Seq.empty
 
   private val models =
@@ -97,9 +98,9 @@ class ModelManager(
       }
       .map { case (model, weight) => ModelType.apply(model) -> weight }
 
-  private def genericTrainerCreator: ActorRef => TrainData => Future[Unit] = {
+  private def genericTrainerCreator: ActorRef => TrainData => Unit = {
     trainer => trainData: TrainData =>
-      (trainer ? trainData)(10 minutes).map(_ => ())
+      (trainer ! trainData)(self)
   }
 
   private def genericPredictorCreator
@@ -112,11 +113,8 @@ class ModelManager(
 
   private var scheduledMessage: Option[Cancellable] = None
 
-  private var train: Seq[TrainData => Future[Unit]] = Seq.empty
+  private var train: Seq[TrainData => Unit] = Seq.empty
   private var predict: Seq[Predict => Future[(PredictResult, ModelType, Int)]] = Seq.empty
-
-  private def trainModels(message: TrainData): Future[Unit] =
-    Future.sequence(train.map(_(message))) map (_ => self ! SwitchToPrediction)
 
   private def receivePredict(
     message: Predict,
@@ -155,14 +153,18 @@ class ModelManager(
       resultsAggregator ! result
     }
 
+  private def cancelCancellable(cancellable: Cancellable): Boolean =
+    if (cancellable.cancel() || cancellable.isCancelled) true
+    else cancelCancellable(cancellable)
+
   private def shiftScheduledMessage(
     cancellable: Option[Cancellable],
     receiver: ActorRef,
     modelMessages: ModelMessages
   ): Option[Cancellable] =
     cancellable.flatMap { cancellable =>
-      cancellable.cancel()
-      Some(context.system.scheduler.scheduleOnce(30 seconds, receiver, modelMessages))
+      cancelCancellable(cancellable)
+      Some(context.system.scheduler.scheduleOnce(2 minutes, receiver, modelMessages))
     }
 
   private var trainData: Seq[CleansedEmail] = Seq.empty
@@ -174,12 +176,13 @@ class ModelManager(
     case SetShiftMessage =>
       scheduledMessage = Some(
         context.system.scheduler
-          .scheduleOnce(30 seconds, rootActor, ModelMessages.LastPredictionMade)
+          .scheduleOnce(2 minutes, rootActor, ModelMessages.LastPredictionMade)
       )
 
     case WriteModels =>
       writeModels()
       context.become(trainState)
+      modelTrained = 0
       scheduledMessage = None
       log.info("Going to train state, completely forgot everything.")
 
@@ -200,13 +203,17 @@ class ModelManager(
   }
 
   private def shiftState: Receive = {
-    case SwitchToPrediction =>
-      log.info("Going to predictState")
-      context.become(predictState)
-      rootActor ! Trained
-
     case Done => throw new Exception("Reseting actor")
 
+    case Trained =>
+      modelTrained += 1
+      if(train.size == modelTrained) {
+        log.info("Going to predictState")
+        context.become(predictState)
+        rootActor ! Trained
+      } else {
+        log.debug("Trainer count {}, trained {}", train.size, modelTrained)
+      }
     case other =>
       log.warn(s"Shift state $other")
 
@@ -215,7 +222,7 @@ class ModelManager(
   private def trainState: Receive = {
     case SetShiftMessage =>
       scheduledMessage = Some(
-        context.system.scheduler.scheduleOnce(1 minute, self, ModelMessages.TrainModels)
+        context.system.scheduler.scheduleOnce(2 minute, self, ModelMessages.TrainModels)
       )
 
     case message: Train =>
@@ -225,7 +232,7 @@ class ModelManager(
 
     case TrainModels =>
       log.info("Going to train models")
-      trainModels(TrainData(trainData))
+      train.foreach(_(TrainData(trainData)))
       scheduledMessage = None
       context.become(shiftState)
       ()

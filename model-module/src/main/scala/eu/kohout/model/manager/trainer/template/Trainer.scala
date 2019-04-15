@@ -25,22 +25,23 @@ trait Trainer[T] extends Actor {
 
   override def receive: Receive = {
     case msg: TrainData =>
-      replyToTrained = Some(sender())
+      val replyTo = sender()
+      replyToTrained = Some(replyTo)
       train(msg)
 
     case WriteModels =>
       writeModel(name)
 
     case Trained =>
-      trainedTimes += 1
-      log.debug("trainedTimes: {}", trainedTimes)
-      if (trainedTimes == countOfPredictors) {
+      receivedResponse += 1
+      log.debug("receivedResponse: {}, countOfPredictors: {}", receivedResponse, countOfPredictors)
+      if (receivedResponse == countOfPredictors) {
         replyToTrained.foreach(_ ! Trained)
       }
   }
 
   protected def train: TrainData => Unit = { trainData =>
-    trainedTimes = 0
+    receivedResponse = 0
     val classifiers = trainData.data
       .map(_.`type`.y)(collection.breakOut[Seq[CleansedEmail], Int, Array[Int]])
 

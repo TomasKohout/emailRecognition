@@ -32,7 +32,7 @@ object ResultsAggregator {
                                        | "id": "$id",
                                        | "before": "${realType.toString}",
                                        | "result": "${predictedType.toString}",
-                                       | "result": "$result",
+                                       | "prediction": $result,
                                        | "models":
                                        |    ${models.map { _.toString}.mkString("[", ",\n", "]")}
                                        |}
@@ -48,15 +48,11 @@ class ResultsAggregator(config: Config) extends Actor {
   private val log = Logger(self.path.toStringWithoutAddress)
   private var results: Seq[AfterPrediction] = Seq.empty
 
-  private var cancellable: Option[Cancellable] = None
-
-  //todo add configuration for results
   private val resultsDir = config.getString(Configuration.resultsDir)
   private var countOfResult = 0
 
   private def writeResults: Receive = {
     case result: AfterPrediction =>
-      log.debug("After prediction for id {} received!", result.id)
       results = results :+ result
 
     case WriteResults =>

@@ -30,6 +30,10 @@ class CleansedDataAccumulator extends Actor {
   private var cleansedData: Seq[CleansedData] = Seq.empty
   private var sendToDictionary: Option[Cancellable] = None
 
+  private def cancelCancellable(cancellable: Cancellable): Boolean =
+    if (cancellable.cancel() || cancellable.isCancelled) true
+    else cancelCancellable(cancellable)
+
   override def receive: Receive = {
     case CreateDictionary(loadDataManager) =>
       log.debug("Sending CreateDictionaryFromData to loadDataManager")
@@ -37,17 +41,16 @@ class CleansedDataAccumulator extends Actor {
       loadDataManager ! CreateDictionaryFromData
 
     case data: CleansedData =>
-
       sendToDictionary = sendToDictionary.fold(
         Some(
           context.system.scheduler
-            .scheduleOnce(delay = 1 minute, message = SendDictionary, receiver = self)
+            .scheduleOnce(delay = 15 minutes, message = SendDictionary, receiver = self)
         )
       ) { cancellable =>
-        cancellable.cancel()
+        cancelCancellable(cancellable)
         Some(
           context.system.scheduler.scheduleOnce(
-            delay = 1 minute,
+            delay = 15 minutes,
             message = SendDictionary,
             receiver = self
           )
