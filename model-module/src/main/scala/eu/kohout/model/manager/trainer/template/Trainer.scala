@@ -1,5 +1,7 @@
 package eu.kohout.model.manager.trainer.template
 import java.io.{File, FileWriter}
+import java.time.format.{DateTimeFormatter, FormatStyle}
+import java.time.LocalDateTime
 
 import akka.actor.{Actor, ActorRef}
 import akka.routing.Broadcast
@@ -58,7 +60,14 @@ trait Trainer[T] extends Actor {
     model.foreach { trainedModel =>
       val xmlModel = serializer.toXML(trainedModel)
 
-      val writer = new FileWriter(new File(writeModelTo + "/" + name + trainedTimes))
+      val writer = new FileWriter(
+        new File(
+          writeModelTo + "/" + name + "_" + trainedTimes + "_" + LocalDateTime
+            .now()
+            .format(DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL))
+            .filterNot(Character.isWhitespace) + ".model"
+        )
+      )
       try {
         writer.write(xmlModel)
       } finally {

@@ -1,7 +1,9 @@
 package eu.kohout.cleandata
 
+import java.io.{File, FileInputStream}
+
 import SymSpell.SymSpell
-import akka.actor.{Actor, ActorRef, Props, Stash}
+import akka.actor.{Actor, ActorRef, Props}
 import akka.util.Timeout
 import com.thoughtworks.xstream.XStream
 import com.typesafe.config.Config
@@ -35,8 +37,8 @@ class CleanDataWorker(
   modelManager: ActorRef,
   stopWords: String,
   config: Config)
-    extends Actor
-    with Stash {
+    extends Actor{
+  private val log = Logger(self.path.toStringWithoutAddress)
 
   private def createStemmer: String => Stemmer = {
     case "PORTER"    => new PorterStemmer
@@ -51,17 +53,20 @@ class CleanDataWorker(
 
   private val symspell = {
     val symSpell = new SymSpell(500, 2, -1, 1)
-    symSpell.loadDictionary(config.getString(Configuration.symspellDictionary), 0, 1)
+    val file = new File(config.getString(Configuration.symspellDictionary))
+    if(file.isFile)
+      symSpell.loadDictionary(new FileInputStream(file) , 0, 1)
+    else
+      symSpell.loadDictionary(getClass.getResourceAsStream(config.getString(Configuration.symspellDictionary)) , 0, 1)
     symSpell
   }
 
   private val xstream = new XStream
 
-  private val concatenateChars = config.getInt(Configuration.concatenateChars)
+  private implicit val concatenateChars: Int = config.getInt(Configuration.concatenateChars)
 
   implicit val timeout: Timeout = 5 seconds
 
-  private val log = Logger(self.path.toStringWithoutAddress)
   private var bag: Option[Bag[String]] = None
 
   override def receive: Receive = withoutBag
@@ -78,17 +83,10 @@ class CleanDataWorker(
         }
         .getOrElse(())
 
-    case _: PredictionData =>
-      stash()
-
-    case _: TrainData =>
-      stash()
-
     case shareBag: ShareBag =>
       bag = Some(xstream.fromXML(shareBag.bag).asInstanceOf[Bag[String]])
       log.info("Becoming withBagOfWords")
       context.become(withBagOfWords)
-      unstashAll()
 
     case other =>
       log.warn("Received message that should not be here {}", other)
@@ -154,7 +152,7 @@ class CleanDataWorker(
           try {
             Some(stemmer.stem(word))
           } catch {
-            case ex: java.lang.ArrayIndexOutOfBoundsException => None
+            case _: java.lang.ArrayIndexOutOfBoundsException => None
           }
       )
       .groupBy(identity)
@@ -171,7 +169,7 @@ class CleanDataWorker(
     )
   }
 
-  private def concatenateSplitWords(str: String): String = {
+  private def concatenateSplitWords(str: String)(implicit concatenateChars: Int): String = {
     val (result, currResult) = str.split(' ').foldLeft("", "") {
       case ((res, curResult), s) =>
         if (s.length <= concatenateChars) {
@@ -192,6 +190,6 @@ class CleanDataWorker(
   ): Unit = {
     super.preRestart(reason, message)
     bag.map(xstream.toXML).map(ShareBag).foreach(self !)
-    log.info("Reason why i am restarted {}, stack {}", reason, reason.getStackTrace)
+    log.warn("Reason why I am restarted {}, stack {}", reason, reason.getStackTrace)
   }
 }

@@ -1,7 +1,6 @@
 package eu.kohout.rest
 
-import akka.Done
-import akka.actor.{ActorRef, ActorSystem}
+import akka.actor.ActorSystem
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.Http.ServerBinding
 import akka.http.scaladsl.marshalling.Marshal
@@ -17,7 +16,7 @@ import io.circe.Json
 import io.circe.generic.auto._
 import io.circe.syntax._
 
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
 object HttpServer {
@@ -55,13 +54,11 @@ class HttpServer(
               case Success(value) => complete(HttpResponse(entity = value))
               case Failure(ex) =>
                 complete(
-                  StatusCodes.BadRequest,
+                  StatusCodes.InternalServerError,
                   Json
                     .obj(
                       "error" -> ex.getMessage.asJson,
-                      "stack" -> ex.getStackTrace.map(_.toString).asJson
                     )
-                    .toString()
                 )
             }
 
@@ -69,8 +66,8 @@ class HttpServer(
         }
       }
     } ~
-      get {
-        path("controls" / "!crossValidation") {
+      post {
+        path("controls" / "!cross-validation") {
           extractExecutionContext { implicit ec =>
             val response = httpServerHandler
               .crossValidation()
@@ -82,8 +79,8 @@ class HttpServer(
           }
         }
       } ~
-      get {
-        path("controls" / "!trainModels") {
+      post {
+        path("controls" / "!train-models") {
           extractExecutionContext { implicit ec =>
             val response = httpServerHandler
               .trainModels()
@@ -95,7 +92,7 @@ class HttpServer(
           }
         }
       } ~
-      get {
+      post {
         path("controls" / "!restart") {
           extractExecutionContext { implicit ec =>
             val response = httpServerHandler
@@ -108,7 +105,7 @@ class HttpServer(
           }
         }
       } ~
-      get {
+      post {
         path("controls" / "!terminate") {
           extractExecutionContext { implicit ec =>
             val response = httpServerHandler
@@ -121,7 +118,7 @@ class HttpServer(
           }
         }
       }~
-      get {
+      post {
         path("controls" / "!start") {
           extractExecutionContext { implicit ec =>
             val response = httpServerHandler

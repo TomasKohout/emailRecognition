@@ -12,16 +12,14 @@ import akka.cluster.singleton.{
 }
 import akka.pattern.ask
 import akka.routing._
-import akka.util.Timeout
 import com.typesafe.config.{Config, ConfigValueType}
 import com.typesafe.scalalogging.Logger
 import ModelMessages._
 import akka.Done
-import eu.kohout.aggregator.{Model, ModelType}
+import eu.kohout.aggregator.{ModelResult, ModelType}
 import eu.kohout.aggregator.ResultsAggregator.AfterPrediction
 import eu.kohout.model.manager.ModelManager.{Actors, Configuration}
 import eu.kohout.model.manager.predictor.GenericPredictor
-import eu.kohout.model.manager.trainer.KNNTrainer.Configuration.configPath
 import eu.kohout.model.manager.trainer.{AdaBoostTrainer, KNNTrainer, NaiveTrainer, SVMTrainer}
 import eu.kohout.parser.EmailType.{Ham, Spam}
 
@@ -64,8 +62,6 @@ class ModelManager(
     extends Actor {
   private val log = Logger(self.path.toStringWithoutAddress)
 
-  //TODO move this into config
-  implicit private val timeout: Timeout = 5 seconds
   implicit private val ec: ExecutionContext = context.dispatcher
 
   private var modelTrained: Int = 0
@@ -123,7 +119,7 @@ class ModelManager(
     for {
       results <- Future.sequence(predict.map(_(message)))
       resultModels = results
-        .map { case (predictResult, modelType, _) => Model(predictResult.result, modelType) }
+        .map { case (predictResult, modelType, _) => ModelResult(predictResult.result, modelType) }
 
       prediction = results
         .groupBy(_._1.result)
@@ -197,8 +193,7 @@ class ModelManager(
     case Done => throw new Exception("Reseting actor")
 
     case other =>
-      log.warn("Prediction state")
-      log.warn(s"$other message")
+      log.warn(s"Prediction state: $other message")
 
   }
 
@@ -211,6 +206,7 @@ class ModelManager(
         log.info("Going to predictState")
         context.become(predictState)
         rootActor ! Trained
+        trainData = Seq.empty
       } else {
         log.debug("Trainer count {}, trained {}", train.size, modelTrained)
       }
@@ -227,6 +223,9 @@ class ModelManager(
 
     case message: Train =>
       trainData = trainData :+ message.data
+
+      if(trainData.size % 100 == 0)
+        log.info("So far accumulated training data {}", trainData.size)
 
       scheduledMessage = shiftScheduledMessage(scheduledMessage, self, ModelMessages.TrainModels)
 
@@ -261,7 +260,6 @@ class ModelManager(
             writeModelTo = config.getString("write-model-to"),
             countOfPredictors = countOfPredictors
           ),
-          specificConfig = config.getConfig("trainer"),
           name = SVMTrainer.name + "Trainer"
         ) -> predictors
 
@@ -280,7 +278,6 @@ class ModelManager(
               countOfPredictors = countOfPredictors,
               writeModelTo = config.getString("write-model-to")
             ),
-          specificConfig = config.getConfig("trainer"),
           name = "NaiveTrainer"
         ) -> predictors
       case ModelType.AdaBoost =>
@@ -296,7 +293,6 @@ class ModelManager(
             countOfPredictors = countOfPredictors,
             writeModelTo = config.getString("write-model-to")
           ),
-          specificConfig = config.getConfig("trainer"),
           AdaBoostTrainer.name + "Trainer"
         ) -> predictors
 
@@ -314,7 +310,6 @@ class ModelManager(
             countOfPredictors = countOfPredictors,
             writeModelTo = config.getString("write-model-to")
           ),
-          specificConfig = config.getConfig("trainer"),
           KNNTrainer.name + "Trainer"
         ) -> predictors
     }
@@ -345,7 +340,6 @@ class ModelManager(
 
   def startTrainer(
     props: Props,
-    specificConfig: Config,
     name: String
   ): ActorRef = {
     val singleton = context.actorOf(
@@ -355,7 +349,8 @@ class ModelManager(
           terminationMessage = PoisonPill,
           settings = ClusterSingletonManagerSettings(context.system)
         )
-        .withDispatcher("model-dispatcher")
+        .withDispatcher("model-dispatcher"),
+      name
     )
 
     context.actorOf(
@@ -364,7 +359,8 @@ class ModelManager(
           singletonManagerPath = singleton.path.toStringWithoutAddress,
           settings = ClusterSingletonProxySettings(context.system)
         )
-        .withDispatcher("model-dispatcher")
+        .withDispatcher("model-dispatcher"),
+      name + "Proxy"
     )
   }
 

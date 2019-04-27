@@ -4,11 +4,10 @@ import java.io.File
 
 import akka.Done
 import akka.actor.{ActorRef, Props}
-import akka.cluster.sharding.ShardRegion
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
 import eu.kohout.loaddata.LoadDataWorker.LoadDataWorkerMessage
-import eu.kohout.parser.{Email, EmailType}
+import eu.kohout.parser.EmailType
 
 import scala.concurrent.ExecutionContext
 
@@ -19,9 +18,8 @@ object LoadDataManager {
   def props(
     config: Config,
     cleanDataManager: ActorRef,
-    resultsAggregator: ActorRef,
     rootActor: ActorRef
-  ): Props = Props(new LoadDataManager(config, cleanDataManager, resultsAggregator, rootActor))
+  ): Props = Props(new LoadDataManager(config, cleanDataManager, rootActor))
 
   private type LoadDataWorkers = ActorRef
 
@@ -29,17 +27,9 @@ object LoadDataManager {
 
   case object LoadTrainData extends LoadDataManagerMessages
   case object CreateDictionaryFromData extends LoadDataManagerMessages
-  case object LoadData extends LoadDataManagerMessages
   case object DictionaryExists extends LoadDataManagerMessages
   case object StartCrossValidation extends LoadDataManagerMessages
   case object ContinueCrossValidation extends LoadDataManagerMessages
-
-  case class DecreaseForError(exception: Option[Throwable]) extends LoadDataManagerMessages
-
-  case class LoadedData(
-    email: Email,
-    file: String)
-      extends LoadDataManagerMessages
 
   sealed trait LoadDataManagerMessages
 }
@@ -47,9 +37,8 @@ object LoadDataManager {
 class LoadDataManager(
   val config: Config,
   val cleanDataManager: ActorRef,
-  val resultsAggregator: ActorRef,
   val rootActor: ActorRef)
-    extends LoadDataManagerLogic(config = config, cleanDataManager = cleanDataManager, resultsAggregator = resultsAggregator) {
+    extends LoadDataManagerLogic(config = config, cleanDataManager = cleanDataManager) {
   import LoadDataManager._
 
   override protected val log: Logger = Logger(self.path.toStringWithoutAddress)
@@ -142,7 +131,6 @@ class LoadDataManager(
   private def creationOfDictionary: Receive = {
     case DictionaryExists =>
       context become waitingForOrders
-      self ! LoadData
 
     case CreateDictionaryFromData =>
       val replyTo = sender()

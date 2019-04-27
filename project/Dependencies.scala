@@ -16,6 +16,7 @@ object Versions {
   val commonsLoggingEmpty = "99-empty"
   val enumeratum = "1.5.13"
   val jsoup = "1.11.3"
+  val plotly = "0.5.2"
 }
 
 object Dependencies {
@@ -42,4 +43,5 @@ object Dependencies {
   lazy val enumeratumCirce = "com.beachape" %% "enumeratum-circe" % Versions.enumeratum
   lazy val enumeratum = "com.beachape" %% "enumeratum" % Versions.enumeratum
   lazy val jsoup =  "org.jsoup" % "jsoup" % Versions.jsoup
+  lazy val plotly = "org.plotly-scala" %% "plotly-render" % Versions.plotly
 }

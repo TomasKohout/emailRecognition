@@ -1,13 +1,4 @@
-import Dependencies.{
-  akkaCluster,
-  akkaDistributedData,
-  akkaHttpCirce,
-  circeCore,
-  circeGeneric,
-  circeParser,
-  typesafeConfig,
-  _
-}
+import Dependencies._
 
 lazy val commonSettings = Seq(
   organization := "eu.kohout",
@@ -17,15 +8,11 @@ lazy val commonSettings = Seq(
     "Sonatype Releases" at "http://oss.sonatype.org/content/repositories/releases"
   ),
   libraryDependencies ++= Seq(
-    // next 2 lines redirects commons-logging/Log4j records to logback.
-    // For details see http://stackoverflow.com/questions/24310889/how-to-redirect-aws-sdk-logging-output
     commonsLoggingEmpty,
     jclOverSlf4j,
     scalaLogging,
     akkaSlf4j,
     logback
-//    scalaTest % Test,
-//    scalaMock % Test
   ),
   exportJars := true,
   scalacOptions ++= Seq(
@@ -40,11 +27,9 @@ lazy val commonSettings = Seq(
     "-language:implicitConversions", // Allow definition of implicit functions called views
     "-language:postfixOps", // Enable postfix operations.
     "-unchecked", // Enable additional warnings where generated code depends on assumptions.
-    //TODO uncomment this after mongodb macros for codecs work correctly with this flag
     //"-Xcheckinit", // Wrap field accessors to throw an exception on uninitialized access.
     "-Xfatal-warnings", // Fail the compilation if there are any warnings.
     "-Xfuture", // Turn on future language features.
-    // TODO: uncomment and fix errors
     //"-Xlint:adapted-args",               // Warn if an argument list is modified to match the receiver.
     "-Xlint:by-name-right-associative", // By-name parameter of right associative operator.
     "-Xlint:constant", // Evaluation of a constant arithmetic expression results in an error.
@@ -62,24 +47,19 @@ lazy val commonSettings = Seq(
     "-Xlint:stars-align", // Pattern sequence wildcard must align with sequence component.
     "-Xlint:type-parameter-shadow", // A local type parameter shadows a type already in scope.
     "-Xlint:unsound-match", // Pattern match may not be typesafe.
-    // TODO: uncomment and fix errors
-    //"-Yno-adapted-args",                 // Do not adapt an argument list (either by inserting () or creating a tuple) to match the receiver.
     "-Ypartial-unification", // Enable partial unification in type constructor inference
-    // TODO: uncomment and fix errors
-    //"-Ywarn-dead-code",                  // Warn when dead code is identified.
     "-Ywarn-extra-implicit", // Warn when more than one implicit parameter section is defined.
     "-Ywarn-inaccessible", // Warn about inaccessible types in method signatures.
     "-Ywarn-infer-any", // Warn when a type argument is inferred to be `Any`.
     "-Ywarn-nullary-override", // Warn when non-nullary `def f()' overrides nullary `def f'.
     "-Ywarn-nullary-unit", // Warn when nullary methods return Unit.
     "-Ywarn-numeric-widen", // Warn when numerics are widened.
-    // TODO: uncomment and fix errors
-    //    "-Ywarn-unused:implicits", // Warn if an implicit parameter is unused.
-    //    "-Ywarn-unused:imports", // Warn if an import selector is not referenced.
-    //    "-Ywarn-unused:locals", // Warn if a local definition is unused.
-    //    "-Ywarn-unused:params", // Warn if a value parameter is unused.
-    //    "-Ywarn-unused:patvars", // Warn if a variable bound in a pattern is unused.
-    //    "-Ywarn-unused:privates", // Warn if a private member is unused.
+        "-Ywarn-unused:implicits", // Warn if an implicit parameter is unused.
+        "-Ywarn-unused:imports", // Warn if an import selector is not referenced.
+//        "-Ywarn-unused:locals", // Warn if a local definition is unused.
+        "-Ywarn-unused:params", // Warn if a value parameter is unused.
+//        "-Ywarn-unused:patvars", // Warn if a variable bound in a pattern is unused.
+//        "-Ywarn-unused:privates", // Warn if a private member is unused.
     "-Ywarn-value-discard" // Warn when non-Unit expression results are unused.
   )
 )
@@ -98,7 +78,7 @@ lazy val `rest-api-module` = (project in file("rest-api-module"))
       enumeratum
     )
   )
-  .dependsOn(`results-aggregator`, `clean-data-module`)
+  .dependsOn(`results-aggregator-module`)
 
 lazy val `model-module` = (project in file("model-module"))
   .settings(
@@ -111,7 +91,7 @@ lazy val `model-module` = (project in file("model-module"))
       smileCore
     )
   )
-  .dependsOn(`results-aggregator`)
+  .dependsOn(`results-aggregator-module`)
 
 lazy val `clean-data-module` = (project in file("clean-data-module"))
   .settings(
@@ -137,9 +117,9 @@ lazy val `load-data-module` = (project in file("load-data-module"))
       akkaClusterSharding
     )
   )
-  .dependsOn(`email-parser`, `clean-data-module`)
+  .dependsOn(`clean-data-module`)
 
-lazy val `email-parser` = (project in file("email-parser"))
+lazy val `email-parser-module` = (project in file("email-parser-module"))
   .settings(
     libraryDependencies ++= Seq(
       emailParser
@@ -149,31 +129,29 @@ lazy val `email-parser` = (project in file("email-parser"))
 lazy val `email-recognition` = (project in file("."))
   .settings(
     mainClass in Compile := Some("eu.kohout.Main"),
-    bashScriptExtraDefines += """addJava "-Dconfig.file=${app_home}/../conf/application.conf""""
+    bashScriptExtraDefines += """addJava "-Dconfig.file=${app_home}/../conf/application.conf"""",
+    bashScriptExtraDefines += """addJava "-Dlogback.configurationFile=${app_home}/../conf/logback.xml""""
   )
   .dependsOn(
-    `load-data-module`,
-    `clean-data-module`,
-    `model-module`,
     `rest-api-module`,
-    `email-parser`,
-    `dictionary-resolver`
+    `dictionary-resolver-module`
   )
   .enablePlugins(JavaServerAppPackaging)
 
-lazy val `results-aggregator` = (project in file("results-aggregator"))
+lazy val `results-aggregator-module` = (project in file("results-aggregator-module"))
   .settings(
     libraryDependencies ++= Seq(
       akkaActor,
       akkaHttp,
       akkaDistributedData,
       akkaCluster,
-      akkaClusterSharding
+      akkaClusterSharding,
+      plotly
     )
   )
-  .dependsOn(`email-parser`)
+  .dependsOn(`email-parser-module`)
 
-lazy val `dictionary-resolver` = (project in file("dictionary-resolver"))
+lazy val `dictionary-resolver-module` = (project in file("dictionary-resolver-module"))
   .dependsOn(`load-data-module`)
 
 assemblyMergeStrategy in assembly := {

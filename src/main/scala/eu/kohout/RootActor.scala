@@ -2,12 +2,7 @@ package eu.kohout
 
 import akka.Done
 import akka.actor.{Actor, ActorContext, ActorRef, PoisonPill, Props, Stash}
-import akka.cluster.singleton.{
-  ClusterSingletonManager,
-  ClusterSingletonManagerSettings,
-  ClusterSingletonProxy,
-  ClusterSingletonProxySettings
-}
+import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
 import com.thoughtworks.xstream.XStream
 import com.typesafe.config.{Config, ConfigFactory}
 import com.typesafe.scalalogging.Logger
@@ -145,7 +140,6 @@ class RootActor extends Actor with Stash {
       .props(
         config.getConfig(LoadDataManagerLogic.Configuration.configPath),
         cleanDataManager = cleanDataManager,
-        resultsAggregator = resultsAggregator,
         rootActor = selfProxy
       ),
     LoadDataManager.name
@@ -171,7 +165,7 @@ class RootActor extends Actor with Stash {
 
   private def startApplication: Receive = {
     case HttpMessages.RootActor.StartApplication =>
-      log.info("Starting application")
+      log.debug("Starting application")
       dictionaryResolver ! DictionaryResolver.ResolveDictionary
 
     case msg: DictionaryResolver.DictionaryResolved =>
@@ -200,12 +194,14 @@ class RootActor extends Actor with Stash {
       modelManager ! ModelMessages.SetShiftMessage
 
     case ModelMessages.LastPredictionMade =>
+      log.info("Prediction phase done")
       resultsAggregator ! ResultsAggregator.WriteResults
       modelManager ! ModelMessages.WriteModels
       modelManager ! ModelMessages.SetShiftMessage
       loadDataManager ! LoadDataManager.StartCrossValidation
 
     case ModelMessages.Trained =>
+      log.info("Starting prediction phase")
       loadDataManager ! LoadDataManager.ContinueCrossValidation
       modelManager ! ModelMessages.SetShiftMessage
 
@@ -213,8 +209,9 @@ class RootActor extends Actor with Stash {
       log.info("Cross validation is done")
       modelManager ! Done
       modelManager ! ModelMessages.FeatureSizeForBayes(
-        bayesSize.getOrElse(throw new Exception("Does not have a bayes size!"))
+        bayesSize.getOrElse(throw new Exception("RootActor does not have a bayes size!"))
       )
+      resultsAggregator ! ResultsAggregator.WriteGraph
       context.become(waitingForOrders)
 
     case HttpMessages.RootActor.PredictionData(_) =>
@@ -253,11 +250,6 @@ class RootActor extends Actor with Stash {
     case HttpMessages.RootActor.TrainModel =>
       context.become(trainModels)
       self ! RootActor.TrainModel
-
-    case HttpMessages.RootActor.Terminate =>
-      log.info("Terminating actor system, bye.")
-      context.system.terminate()
-      ()
 
     case other =>
       log.warn("Unsupported message received {}", other)

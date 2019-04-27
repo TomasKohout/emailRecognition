@@ -26,7 +26,7 @@ object LoadDataManagerLogic {
 
 }
 
-abstract class LoadDataManagerLogic(config: Config, cleanDataManager: ActorRef, resultsAggregator: ActorRef ) extends Actor {
+abstract class LoadDataManagerLogic(config: Config, cleanDataManager: ActorRef) extends Actor {
 
   protected val workers: ActorRef = createWorkers()
 
@@ -123,7 +123,7 @@ abstract class LoadDataManagerLogic(config: Config, cleanDataManager: ActorRef, 
           maxInstancesPerNode = numberOfWorkers,
           allowLocalRoutees = true
         )
-      ).props(LoadDataWorker.props(cleanDataManager, resultsAggregator)),
+      ).props(LoadDataWorker.props(cleanDataManager)),
       name = "LoadDataWorker"
     )
   }

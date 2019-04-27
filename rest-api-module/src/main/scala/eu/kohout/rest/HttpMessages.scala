@@ -8,7 +8,6 @@ object HttpMessages {
     case object TrainModel
     case object RestartActors
     case object StartActors
-    case object Terminate
     case object StartApplication
     case class PredictionData(email: Email)
     case object NotTrained

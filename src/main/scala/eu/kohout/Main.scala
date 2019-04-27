@@ -9,11 +9,10 @@ import akka.cluster.singleton.{
 }
 import com.typesafe.config.{Config, ConfigFactory}
 import eu.kohout.rest.{HttpServer, HttpServerHandler}
-import akka.pattern.ask
 import com.typesafe.scalalogging.Logger
 
 import concurrent.duration._
-import scala.concurrent.{Await, ExecutionContext}
+import scala.concurrent.ExecutionContext
 
 object Main {
   val actorSystem = ActorSystem("application")
@@ -32,7 +31,7 @@ object Main {
     )
 
     val httpServer =
-      new HttpServer(config, HttpServerHandler(rootActorProxy)(5 seconds))(actorSystem).start
+      new HttpServer(config, HttpServerHandler(rootActorProxy, actorSystem)(5 seconds))(actorSystem).start
 
   }
 

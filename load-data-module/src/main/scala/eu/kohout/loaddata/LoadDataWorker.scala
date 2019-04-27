@@ -12,9 +12,8 @@ import scala.util.Try
 object LoadDataWorker {
 
   def props(
-    cleanDataManager: ActorRef,
-    resultsAggregator: ActorRef
-  ): Props = Props(new LoadDataWorker(cleanDataManager, resultsAggregator))
+    cleanDataManager: ActorRef
+  ): Props = Props(new LoadDataWorker(cleanDataManager))
 
   case class LoadPredictionData(
     email: File,
@@ -35,8 +34,7 @@ object LoadDataWorker {
 }
 
 class LoadDataWorker(
-  val cleanDataManager: ActorRef,
-  resultsAggregator: ActorRef)
+  val cleanDataManager: ActorRef)
     extends Actor {
   import LoadDataWorker._
 
@@ -48,7 +46,7 @@ class LoadDataWorker(
     onSuccess: Email => Unit
   ): Unit =
     Try(
-      EmailParser.parseFromFile(email, label)
+      EmailParser.parse(email, label)
     ).fold(
       exception => log.error("Exception occurred when loading data", exception),
       onSuccess
