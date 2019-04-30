@@ -7,7 +7,6 @@ object HttpMessages {
     case object StartCrossValidation
     case object TrainModel
     case object RestartActors
-    case object StartActors
     case object StartApplication
     case class PredictionData(email: Email)
     case object NotTrained

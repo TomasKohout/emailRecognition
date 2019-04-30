@@ -5,7 +5,8 @@ lazy val commonSettings = Seq(
   scalaVersion := "2.12.7",
   resolvers ++= Seq(
     "Sonatype Snapshots" at "http://oss.sonatype.org/content/repositories/snapshots",
-    "Sonatype Releases" at "http://oss.sonatype.org/content/repositories/releases"
+    "Sonatype Releases" at "http://oss.sonatype.org/content/repositories/releases",
+    "version99 Empty loggers" at "http://version99.qos.ch"
   ),
   libraryDependencies ++= Seq(
     commonsLoggingEmpty,

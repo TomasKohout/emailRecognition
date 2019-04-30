@@ -8,7 +8,6 @@ object Versions {
   val smileCore = "1.5.2"
   val akkaActor = "2.5.22"
   val scalaLogging = "3.9.0"
-  val guice = "4.2.0"
   val typesafeConfig = "1.3.3"
   val logback = "1.2.3"
   val circe = "0.10.0"
@@ -28,7 +27,6 @@ object Dependencies {
   lazy val smileCore = "com.github.haifengl" %% "smile-scala" % Versions.smileCore
   lazy val smileNetlib = "com.github.haifengl" %% "smile-netlib" % Versions.smileCore
   lazy val scalaLogging = "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLogging
-  lazy val googleGuice = "com.google.inject" % "guice" % Versions.guice
   lazy val typesafeConfig = "com.typesafe" % "config" % Versions.typesafeConfig
   lazy val emailParser = "tech.blueglacier" % "email-mime-parser" % Versions.emailParser
   lazy val akkaSlf4j = "com.typesafe.akka" %% "akka-slf4j" % Versions.akkaActor

@@ -54,7 +54,7 @@ class HttpServer(
               case Success(value) => complete(HttpResponse(entity = value))
               case Failure(ex) =>
                 complete(
-                  StatusCodes.InternalServerError,
+                  StatusCodes.BadRequest,
                   Json
                     .obj(
                       "error" -> ex.getMessage.asJson,
