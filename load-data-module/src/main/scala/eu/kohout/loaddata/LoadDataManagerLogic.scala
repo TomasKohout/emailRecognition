@@ -121,21 +121,27 @@ abstract class LoadDataManagerLogic(config: Config, cleanDataManager: ActorRef) 
         ClusterRouterPoolSettings(
           totalInstances = 100,
           maxInstancesPerNode = numberOfWorkers,
-          allowLocalRoutees = true
+          allowLocalRoutees = true,
+          useRoles = Set("load-data")
         )
       ).props(LoadDataWorker.props(cleanDataManager)),
       name = "LoadDataWorker"
     )
   }
 
-  protected def createLabelMap(path: File): Map[FileName, EmailType] =
-    Source
-      .fromFile(path.getAbsolutePath)
-      .getLines
-      .toSeq
-      .flatMap(splitLabelsRow)(
-        collection.breakOut[Seq[String], (FileName, EmailType), Map[FileName, EmailType]]
-      )
+  protected def createLabelMap(path: File): Map[FileName, EmailType] ={
+    val source = Source.fromFile(path.getAbsolutePath)
+    try {
+      source
+        .getLines
+        .toSeq
+        .flatMap(splitLabelsRow)(
+          collection.breakOut[Seq[String], (FileName, EmailType), Map[FileName, EmailType]]
+        )
+    } finally {
+      source.close()
+    }
+  }
 
   protected def splitForCrossValidation(files: Seq[File]): List[Seq[File]] = {
     val sizeOfPart = files.length / splitTo / 2

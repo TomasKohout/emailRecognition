@@ -4,7 +4,7 @@ import akka.Done
 import akka.actor.{Actor, ActorRef, Props}
 import akka.cluster.routing.{ClusterRouterPool, ClusterRouterPoolSettings}
 import akka.cluster.sharding.ShardRegion
-import akka.routing.{Broadcast, SmallestMailboxPool}
+import akka.routing.{Broadcast, RoundRobinPool}
 import com.thoughtworks.xstream.XStream
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.Logger
@@ -113,7 +113,7 @@ class CleanDataManager(
     )
     val workers = context.actorOf(
       ClusterRouterPool(
-        SmallestMailboxPool(numberOfWorkers),
+        RoundRobinPool(numberOfWorkers),
         ClusterRouterPoolSettings(
           totalInstances = numberOfWorkers * 10,
           maxInstancesPerNode = numberOfWorkers,

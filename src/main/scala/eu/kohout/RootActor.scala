@@ -20,6 +20,37 @@ import scala.concurrent.ExecutionContext
 object RootActor {
   val name = "RootActor"
 
+  case class Role(value: String)
+
+  def clusterSingleton(
+                        props: Props,
+                        name: String,
+                        role: Role
+                      )(
+                        implicit actorContext: ActorContext
+                      ): ActorRef = {
+    val singleton = actorContext
+      .actorOf(
+        ClusterSingletonManager
+          .props(
+            singletonProps = props,
+            terminationMessage = PoisonPill,
+            settings = ClusterSingletonManagerSettings(actorContext.system) withRole role.value,
+          ),
+        name = name
+      )
+
+    actorContext.actorOf(
+      ClusterSingletonProxy
+        .props(
+          singletonManagerPath = singleton.path.toStringWithoutAddress,
+          settings = ClusterSingletonProxySettings(actorContext.system)
+        ),
+      name = name + "Proxy"
+    )
+
+  }
+
   def clusterSingleton(
     props: Props,
     name: String
@@ -142,7 +173,8 @@ class RootActor extends Actor with Stash {
         cleanDataManager = cleanDataManager,
         rootActor = selfProxy
       ),
-    LoadDataManager.name
+    LoadDataManager.name,
+    Role("load-data")
   )
 
   private val dictionaryResolver = clusterSingleton(

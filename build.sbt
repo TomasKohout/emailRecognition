@@ -131,13 +131,15 @@ lazy val `email-recognition` = (project in file("."))
   .settings(
     mainClass in Compile := Some("eu.kohout.Main"),
     bashScriptExtraDefines += """addJava "-Dconfig.file=${app_home}/../conf/application.conf"""",
-    bashScriptExtraDefines += """addJava "-Dlogback.configurationFile=${app_home}/../conf/logback.xml""""
+    bashScriptExtraDefines += """addJava "-Dlogback.configurationFile=${app_home}/../conf/logback.xml"""",
+    batScriptExtraDefines += """call :add_java "-Dconfig.file=%APP_HOME%\conf\application.conf"""",
+    batScriptExtraDefines += """call :add_java "-Dlogback.configurationFile=%APP_HOME%\conf\logback.xml""""
   )
   .dependsOn(
     `rest-api-module`,
     `dictionary-resolver-module`
   )
-  .enablePlugins(JavaServerAppPackaging)
+  .enablePlugins(JavaServerAppPackaging, LauncherJarPlugin)
 
 lazy val `results-aggregator-module` = (project in file("results-aggregator-module"))
   .settings(
@@ -157,6 +159,7 @@ lazy val `dictionary-resolver-module` = (project in file("dictionary-resolver-mo
 
 assemblyMergeStrategy in assembly := {
   case "application.conf" => MergeStrategy.discard
+  case "reference.conf"   => MergeStrategy.concat
   case "logback.xml"      => MergeStrategy.discard
   case x =>
     val oldStrategy = (assemblyMergeStrategy in assembly).value
